@@ -1,7 +1,7 @@
-"""Configuration — only the warehouse ID is required.
+"""Configuration — warehouse ID required; host + token optional (can be set in the UI).
 
-Databricks host and token are resolved automatically from ~/.databrickscfg
-by the SDK. No API keys or model names needed.
+DATABRICKS_HOST and DATABRICKS_TOKEN in .env pre-seed the Connect form in the sidebar.
+If not set, users type them in the UI at runtime.
 """
 
 import os
@@ -18,6 +18,9 @@ if not _warehouse:
 
 WAREHOUSE_ID: str = _warehouse
 
-# Default serving endpoint — uses Databricks Foundation Model APIs built into the workspace.
-# No separate key or host required; the SDK handles auth automatically.
+# Pre-seed values for the sidebar Connect form. Empty string = user must type them.
+DEFAULT_HOST: str = os.getenv("DATABRICKS_HOST", "").strip()
+DEFAULT_TOKEN: str = os.getenv("DATABRICKS_TOKEN", "").strip()
+
+# Default serving endpoint — Databricks Foundation Model API, no separate key needed.
 SERVING_ENDPOINT: str = "databricks-meta-llama-3-3-70b-instruct"

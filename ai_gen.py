@@ -37,12 +37,14 @@ Output format:
 
 
 def generate_column_descriptions(
+    ws: WorkspaceClient,
     full_name: str,
     columns: list[dict],
 ) -> dict[str, str]:
     """Call the LLM to generate descriptions for all columns in a table.
 
     Args:
+        ws: authenticated WorkspaceClient from the Connect form session
         full_name: catalog.schema.table
         columns: list of {name, type, nullable, current_comment}
 
@@ -60,8 +62,7 @@ def generate_column_descriptions(
         f"Return JSON with column_descriptions for every column listed above."
     )
 
-    w = WorkspaceClient()
-    response = w.serving_endpoints.query(
+    response = ws.serving_endpoints.query(
         name=config.SERVING_ENDPOINT,
         messages=[
             ChatMessage(role=ChatMessageRole.SYSTEM, content=_SYSTEM_PROMPT),

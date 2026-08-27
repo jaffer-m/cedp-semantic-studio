@@ -8,9 +8,11 @@ import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+import config
 import catalog
 import ai_gen
 import humanize as hz
+from databricks_client import DatabricksClient
 
 st.set_page_config(
     page_title="Column Descriptions",
@@ -173,6 +175,13 @@ def _parse_csv(raw: bytes) -> dict[str, dict]:
 
 def _init_state():
     defaults = {
+        # Connection — host/token pre-seeded from .env if set
+        "connected": False,
+        "db_client": None,
+        "current_user": "",
+        "db_host": config.DEFAULT_HOST,
+        "db_token": config.DEFAULT_TOKEN,
+        # Browse
         "catalogs": [], "schemas": [], "tables": [], "columns": [],
         "selected_catalog": None, "selected_schema": None, "selected_table": None,
         "table_meta": {}, "suggestions": {}, "apply_results": {},
@@ -186,6 +195,30 @@ def _init_state():
 _init_state()
 
 
+# ── Connect helper ────────────────────────────────────────────────────────
+
+def _connect_databricks(host: str, token: str) -> None:
+    try:
+        client = DatabricksClient(host, token)
+        user = client.test_connection()
+    except Exception as e:
+        st.error(f"Connection failed: {e}")
+        return
+
+    st.session_state.db_client = client
+    st.session_state.connected = True
+    st.session_state.current_user = user
+    # Reset browse state so catalogs reload with new credentials
+    for key in ("catalogs", "schemas", "tables", "columns", "table_meta",
+                "suggestions", "apply_results", "review_import"):
+        st.session_state[key] = [] if isinstance(st.session_state[key], list) else {}
+    st.session_state.generated = False
+    st.session_state.selected_catalog = None
+    st.session_state.selected_schema = None
+    st.session_state.selected_table = None
+    st.toast(f"Connected as {user}", icon="✅")
+
+
 # ── Apply helper ──────────────────────────────────────────────────────────
 
 def _do_apply(full_name: str, suggestions: dict) -> None:
@@ -193,11 +226,12 @@ def _do_apply(full_name: str, suggestions: dict) -> None:
     if not items:
         st.warning("Nothing to apply.")
         return
+    ws = st.session_state.db_client._ws
     results = {}
     progress = st.progress(0, text="Applying…")
     for i, (col_name, comment) in enumerate(items):
         try:
-            catalog.apply_column_comment(full_name, col_name, comment)
+            catalog.apply_column_comment(ws, full_name, col_name, comment)
             results[col_name] = "ok"
         except Exception as e:
             results[col_name] = f"error: {e}"
@@ -224,22 +258,51 @@ def _reset(**extra):
 with st.sidebar:
     st.title("🗂️ Column Descriptions")
     st.caption("Browse Unity Catalog and manage column-level descriptions.")
+
+    # ── Connect form ──────────────────────────────────────────────────────
+    connected = st.session_state.connected
+    badge = "🟢 Live" if connected else "🔴 Off"
+    with st.expander(f"☁️ Databricks Connection  {badge}", expanded=not connected):
+        st.text_input(
+            "Workspace URL",
+            key="db_host",
+            placeholder="https://your-workspace.azuredatabricks.net",
+        )
+        st.text_input(
+            "Personal Access Token",
+            key="db_token",
+            type="password",
+            placeholder="dapi…",
+        )
+        if st.button(
+            "Connect",
+            type="primary" if not connected else "secondary",
+            use_container_width=True,
+        ):
+            host = st.session_state.db_host.strip()
+            token = st.session_state.db_token.strip()
+            if not host or not token:
+                st.error("Both Workspace URL and token are required.")
+            else:
+                _connect_databricks(host, token)
+                st.rerun()
+
+        if connected:
+            st.caption(f"Connected as **{st.session_state.current_user}**")
+
+    if not connected:
+        st.stop()
+
     st.divider()
+
+    # ── Catalog browser (only shown after connect) ────────────────────────
+    client: DatabricksClient = st.session_state.db_client
 
     if not st.session_state.catalogs:
         with st.spinner("Loading catalogs…"):
-            try:
-                st.session_state.catalogs = catalog.list_catalogs()
-            except PermissionError as e:
-                parts = str(e).split("Raw error:", 1)
-                st.error(f"**Access denied** — {parts[0].strip()}")
-                if len(parts) > 1:
-                    with st.expander("Raw error (share with your admin)"):
-                        st.code(parts[1].strip())
-                st.stop()
-            except Exception as e:
-                st.error(f"Could not connect to Databricks: {e}")
-                st.stop()
+            st.session_state.catalogs = client.list_catalogs()
+            if not st.session_state.catalogs:
+                st.warning("No catalogs found. Check your USE CATALOG privilege.")
 
     cat = st.selectbox("Catalog",
         options=["— select —"] + st.session_state.catalogs, key="ui_catalog")
@@ -248,16 +311,9 @@ with st.sidebar:
         _reset(selected_catalog=cat, selected_schema=None, selected_table=None,
                schemas=[], tables=[], table_meta={})
         with st.spinner("Loading schemas…"):
-            try:
-                st.session_state.schemas = catalog.list_schemas(cat)
-            except PermissionError as e:
-                parts = str(e).split("Raw error:", 1)
-                st.error(f"**Access denied** — {parts[0].strip()}")
-                if len(parts) > 1:
-                    with st.expander("Raw error (share with your admin)"):
-                        st.code(parts[1].strip())
-            except Exception as e:
-                st.error(str(e))
+            st.session_state.schemas = client.list_schemas(cat)
+            if not st.session_state.schemas:
+                st.warning(f"No schemas found in `{cat}`. Check your USE SCHEMA privilege.")
 
     schema = st.selectbox("Schema",
         options=["— select —"] + st.session_state.schemas,
@@ -266,16 +322,9 @@ with st.sidebar:
     if schema and schema != "— select —" and schema != st.session_state.selected_schema:
         _reset(selected_schema=schema, selected_table=None, tables=[], table_meta={})
         with st.spinner("Loading tables…"):
-            try:
-                st.session_state.tables = catalog.list_tables(cat, schema)
-            except PermissionError as e:
-                parts = str(e).split("Raw error:", 1)
-                st.error(f"**Access denied** — {parts[0].strip()}")
-                if len(parts) > 1:
-                    with st.expander("Raw error (share with your admin)"):
-                        st.code(parts[1].strip())
-            except Exception as e:
-                st.error(str(e))
+            st.session_state.tables = client.list_tables(cat, schema)
+            if not st.session_state.tables:
+                st.warning(f"No tables found in `{cat}.{schema}`.")
 
     table_name = st.selectbox("Table",
         options=["— select —"] + [t["name"] for t in st.session_state.tables],
@@ -287,9 +336,13 @@ with st.sidebar:
             _reset(selected_table=table_name, table_meta=tbl_meta)
             with st.spinner("Loading columns…"):
                 try:
-                    st.session_state.columns = catalog.get_columns(tbl_meta["full_name"])
+                    st.session_state.columns = client.get_columns(tbl_meta["full_name"])
                 except PermissionError as e:
-                    st.error(f"**Access denied**\n\n{e}")
+                    parts = str(e).split("Raw error:", 1)
+                    st.error(f"**Access denied** — {parts[0].strip()}")
+                    if len(parts) > 1:
+                        with st.expander("Raw error (share with your admin)"):
+                            st.code(parts[1].strip())
                 except Exception as e:
                     st.error(str(e))
 
@@ -300,9 +353,10 @@ with st.sidebar:
             use_container_width=True, type="primary"):
         tbl = st.session_state.table_meta
         cols = st.session_state.columns
+        ws = st.session_state.db_client._ws
         with st.spinner("Generating descriptions…"):
             try:
-                raw = ai_gen.generate_column_descriptions(tbl["full_name"], cols)
+                raw = ai_gen.generate_column_descriptions(ws, tbl["full_name"], cols)
             except Exception as e:
                 st.error(str(e))
                 raw = {}
