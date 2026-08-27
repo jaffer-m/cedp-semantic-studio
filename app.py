@@ -250,9 +250,13 @@ def _do_apply(full_name: str, suggestions: dict) -> None:
 # ── Sidebar ───────────────────────────────────────────────────────────────
 
 def _reset(**extra):
+    # Clear text widget keys for the current table so stale values don't bleed
+    # into the next table's widgets when column names happen to match.
+    for col in st.session_state.get("columns", []):
+        st.session_state.pop(f"text_{col['name']}", None)
     st.session_state.update(dict(
         columns=[], suggestions={}, apply_results={},
-        generated=False, review_import={}, **extra
+        generated=False, gen_error=None, review_import={}, **extra
     ))
 
 
@@ -366,9 +370,10 @@ with st.sidebar:
         st.session_state.gen_error = None
         with st.spinner("Humanizing…"):
             humanized = hz.humanize_all(raw)
-        st.session_state.suggestions = {
-            c["name"]: humanized.get(c["name"], c["current_comment"]) for c in cols
-        }
+        for c in cols:
+            val = humanized.get(c["name"], c["current_comment"])
+            st.session_state.suggestions[c["name"]] = val
+            st.session_state[f"text_{c['name']}"] = val  # keep widget in sync
         st.session_state.apply_results = {}
         st.session_state.review_import = {}
         st.session_state.generated = True
@@ -456,7 +461,9 @@ with import_col:
 
             for col_name, data in review_data.items():
                 if data["approved"] and data["proposed_description"]:
-                    st.session_state.suggestions[col_name] = data["proposed_description"]
+                    val = data["proposed_description"]
+                    st.session_state.suggestions[col_name] = val
+                    st.session_state[f"text_{col_name}"] = val  # keep widget in sync
             st.session_state.review_import = review_data
             st.session_state.apply_results = {}
 
@@ -504,9 +511,9 @@ for col in cols:
     with c5:
         st.markdown("<div style='padding-top:4px'></div>", unsafe_allow_html=True)
         if st.button("✨", key=f"hz_{name}", help=f"Re-humanize {name}"):
-            st.session_state.suggestions[name] = hz.humanize(
-                st.session_state.suggestions.get(name, "")
-            )
+            val = hz.humanize(st.session_state.suggestions.get(name, ""))
+            st.session_state.suggestions[name] = val
+            st.session_state[f"text_{name}"] = val  # keep widget in sync
             st.rerun()
 
     result = st.session_state.apply_results.get(name)
@@ -538,8 +545,11 @@ if btn2.button("💾 Apply Approved Only",
     _do_apply(tbl["full_name"], approved_only)
 
 if btn3.button("Clear", use_container_width=True):
+    for col in st.session_state.columns:
+        st.session_state.pop(f"text_{col['name']}", None)
     st.session_state.suggestions = {}
     st.session_state.apply_results = {}
     st.session_state.review_import = {}
     st.session_state.generated = False
+    st.session_state.gen_error = None
     st.rerun()
