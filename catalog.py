@@ -65,32 +65,33 @@ def _escape(text: str) -> str:
 
 # ── Permission error detection ────────────────────────────────────────────
 
+# Only match messages that clearly indicate a missing UC privilege.
+# Broad signals like INSUFFICIENT_PERMISSIONS are intentionally excluded to
+# avoid false positives on warehouse/network errors.
 _PERM_SIGNALS = [
-    ("does not have USE CATALOG",   "USE CATALOG",  "CATALOG",  "{target}"),
-    ("does not have USE SCHEMA",    "USE SCHEMA",   "SCHEMA",   "{target}"),
-    ("does not have SELECT",        "SELECT",       "TABLE",    "{target}"),
-    ("does not have MODIFY",        "MODIFY",       "TABLE",    "{target}"),
-    ("INSUFFICIENT_PERMISSIONS",    None,           None,       "{target}"),
-    ("PERMISSION_DENIED",           None,           None,       "{target}"),
+    ("does not have USE CATALOG", "USE CATALOG", "CATALOG"),
+    ("does not have USE SCHEMA",  "USE SCHEMA",  "SCHEMA"),
+    ("does not have SELECT",      "SELECT",      "TABLE"),
+    ("does not have MODIFY",      "MODIFY",      "TABLE"),
 ]
 
 
 def _check_permission_error(msg: str, target: str) -> None:
-    """Raise PermissionError with actionable GRANT SQL if msg is a UC privilege error."""
+    """Raise PermissionError with actionable GRANT SQL if msg is a UC privilege error.
+
+    Only fires when the error message contains a clear 'does not have <privilege>'
+    pattern. Broad error codes (INSUFFICIENT_PERMISSIONS, PERMISSION_DENIED) are
+    intentionally not matched to avoid false positives on non-permission failures.
+    """
     msg_upper = msg.upper()
-    for signal, privilege, object_type, _ in _PERM_SIGNALS:
+    for signal, privilege, object_type in _PERM_SIGNALS:
         if signal.upper() in msg_upper:
-            if privilege and object_type:
-                grant_sql = f"GRANT {privilege} ON {object_type} {target} TO `<user-or-group>`;"
-                raise PermissionError(
-                    f"Missing privilege: {privilege} on {target}\n\n"
-                    f"Ask your Databricks admin to run:\n{grant_sql}"
-                )
-            else:
-                raise PermissionError(
-                    f"Insufficient privileges on {target}.\n\n"
-                    f"Ask your Databricks admin to grant the required privileges on {target}."
-                )
+            grant_sql = f"GRANT {privilege} ON {object_type} {target} TO `<user-or-group>`;"
+            raise PermissionError(
+                f"Missing privilege: {privilege} on {target}\n\n"
+                f"Ask your Databricks admin to run:\n  {grant_sql}\n\n"
+                f"Raw error: {msg}"
+            )
 
 
 # ── Browse ────────────────────────────────────────────────────────────────
@@ -107,13 +108,12 @@ def list_catalogs() -> list[str]:
 def list_schemas(catalog: str) -> list[str]:
     _validate(catalog)
     try:
-        rows = _run_sql(
-            f"SELECT schema_name FROM `{catalog}`.information_schema.schemata"
-        )
+        # SHOW SCHEMAS requires only USE CATALOG — lower privilege than information_schema
+        rows = _run_sql(f"SHOW SCHEMAS IN CATALOG `{catalog}`")
     except RuntimeError as e:
         _check_permission_error(str(e), f"CATALOG {catalog}")
         raise
-    return sorted(r["schema_name"] for r in rows)
+    return sorted(r["databaseName"] for r in rows)
 
 
 def list_tables(catalog: str, schema: str) -> list[dict]:

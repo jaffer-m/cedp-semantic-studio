@@ -231,7 +231,11 @@ with st.sidebar:
             try:
                 st.session_state.catalogs = catalog.list_catalogs()
             except PermissionError as e:
-                st.error(f"**Access denied**\n\n{e}")
+                parts = str(e).split("Raw error:", 1)
+                st.error(f"**Access denied** — {parts[0].strip()}")
+                if len(parts) > 1:
+                    with st.expander("Raw error (share with your admin)"):
+                        st.code(parts[1].strip())
                 st.stop()
             except Exception as e:
                 st.error(f"Could not connect to Databricks: {e}")
@@ -247,7 +251,11 @@ with st.sidebar:
             try:
                 st.session_state.schemas = catalog.list_schemas(cat)
             except PermissionError as e:
-                st.error(f"**Access denied**\n\n{e}")
+                parts = str(e).split("Raw error:", 1)
+                st.error(f"**Access denied** — {parts[0].strip()}")
+                if len(parts) > 1:
+                    with st.expander("Raw error (share with your admin)"):
+                        st.code(parts[1].strip())
             except Exception as e:
                 st.error(str(e))
 
@@ -261,7 +269,11 @@ with st.sidebar:
             try:
                 st.session_state.tables = catalog.list_tables(cat, schema)
             except PermissionError as e:
-                st.error(f"**Access denied**\n\n{e}")
+                parts = str(e).split("Raw error:", 1)
+                st.error(f"**Access denied** — {parts[0].strip()}")
+                if len(parts) > 1:
+                    with st.expander("Raw error (share with your admin)"):
+                        st.code(parts[1].strip())
             except Exception as e:
                 st.error(str(e))
 
