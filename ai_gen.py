@@ -72,7 +72,7 @@ def generate_column_descriptions(
             ChatMessage(role=ChatMessageRole.USER, content=user_msg),
         ],
         temperature=0.2,
-        max_tokens=2000,
+        max_tokens=4096,
     )
 
     content = response.choices[0].message.content.strip()
