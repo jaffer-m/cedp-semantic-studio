@@ -18,7 +18,7 @@ import config
 
 logger = logging.getLogger(__name__)
 
-BATCH_SIZE = 25  # columns per API call — keeps output well under token limits
+BATCH_SIZE = 15  # columns per API call — conservative default; auto-halves on truncation
 
 _SYSTEM_PROMPT = """You are a data catalog documentation expert for a clickstream analytics team.
 The tables you document contain clickstream data — user interactions, events, sessions,
@@ -85,6 +85,19 @@ def _call_llm(ws: WorkspaceClient, full_name: str, columns: list[dict]) -> dict[
         ) from e
 
 
+def _call_llm_resilient(ws: WorkspaceClient, full_name: str, columns: list[dict]) -> dict[str, str]:
+    """Call the LLM for a batch; if JSON is truncated, split in half and retry."""
+    try:
+        return _call_llm(ws, full_name, columns)
+    except RuntimeError:
+        if len(columns) <= 1:
+            raise  # can't split further — surface the error
+        mid = len(columns) // 2
+        left = _call_llm_resilient(ws, full_name, columns[:mid])
+        right = _call_llm_resilient(ws, full_name, columns[mid:])
+        return {**left, **right}
+
+
 def generate_column_descriptions(
     ws: WorkspaceClient,
     full_name: str,
@@ -103,5 +116,5 @@ def generate_column_descriptions(
     results: dict[str, str] = {}
     batches = [columns[i:i + BATCH_SIZE] for i in range(0, len(columns), BATCH_SIZE)]
     for batch in batches:
-        results.update(_call_llm(ws, full_name, batch))
+        results.update(_call_llm_resilient(ws, full_name, batch))
     return results
