@@ -20,8 +20,10 @@ logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 25  # columns per API call — keeps output well under token limits
 
-_SYSTEM_PROMPT = """You are a data catalog documentation expert. Generate specific, detailed,
-business-friendly descriptions for database table columns.
+_SYSTEM_PROMPT = """You are a data catalog documentation expert for a clickstream analytics team.
+The tables you document contain clickstream data — user interactions, events, sessions,
+page views, clicks, and related digital behaviour captured from web and mobile surfaces.
+Generate specific, detailed, business-friendly descriptions for database table columns.
 
 Rules:
 - Explain what each column represents in business terms.
