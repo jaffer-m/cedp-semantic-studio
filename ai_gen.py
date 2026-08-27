@@ -24,6 +24,9 @@ Rules:
 - For flag columns, explain what Y and N mean.
 - For date columns calculated at query time, warn that the value should not be stored.
 - Use plain English. Be specific — vague descriptions like "indicates the type" are not useful.
+- Never include PII field names or example values in descriptions.
+- Use business-friendly language suitable for a data catalog audience.
+- Do not reference internal system names or implementation details.
 - Do not include the column name or data type in the description.
 - Return valid JSON only. No markdown fences, no extra text.
 

@@ -186,6 +186,7 @@ def _init_state():
         "selected_catalog": None, "selected_schema": None, "selected_table": None,
         "table_meta": {}, "suggestions": {}, "apply_results": {},
         "generated": False,
+        "gen_error": None,    # persists generation errors across reruns
         "review_import": {},  # {col_name: {approved, notes, proposed_description}}
     }
     for k, v in defaults.items():
@@ -358,8 +359,11 @@ with st.sidebar:
             try:
                 raw = ai_gen.generate_column_descriptions(ws, tbl["full_name"], cols)
             except Exception as e:
-                st.error(str(e))
-                raw = {}
+                st.session_state.gen_error = str(e)
+                st.rerun()  # raises RerunException — nothing below executes
+
+        # Only reached if generation succeeded
+        st.session_state.gen_error = None
         with st.spinner("Humanizing…"):
             humanized = hz.humanize_all(raw)
         st.session_state.suggestions = {
@@ -369,6 +373,9 @@ with st.sidebar:
         st.session_state.review_import = {}
         st.session_state.generated = True
         st.rerun()
+
+    if st.session_state.get("gen_error"):
+        st.error(st.session_state.gen_error)
 
     if st.session_state.generated:
         st.caption("✅ Descriptions generated and humanized.")
