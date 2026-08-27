@@ -63,29 +63,71 @@ def _escape(text: str) -> str:
     return text.replace("'", "\\'")
 
 
+# ── Permission error detection ────────────────────────────────────────────
+
+_PERM_SIGNALS = [
+    ("does not have USE CATALOG",   "USE CATALOG",  "CATALOG",  "{target}"),
+    ("does not have USE SCHEMA",    "USE SCHEMA",   "SCHEMA",   "{target}"),
+    ("does not have SELECT",        "SELECT",       "TABLE",    "{target}"),
+    ("does not have MODIFY",        "MODIFY",       "TABLE",    "{target}"),
+    ("INSUFFICIENT_PERMISSIONS",    None,           None,       "{target}"),
+    ("PERMISSION_DENIED",           None,           None,       "{target}"),
+]
+
+
+def _check_permission_error(msg: str, target: str) -> None:
+    """Raise PermissionError with actionable GRANT SQL if msg is a UC privilege error."""
+    msg_upper = msg.upper()
+    for signal, privilege, object_type, _ in _PERM_SIGNALS:
+        if signal.upper() in msg_upper:
+            if privilege and object_type:
+                grant_sql = f"GRANT {privilege} ON {object_type} {target} TO `<user-or-group>`;"
+                raise PermissionError(
+                    f"Missing privilege: {privilege} on {target}\n\n"
+                    f"Ask your Databricks admin to run:\n{grant_sql}"
+                )
+            else:
+                raise PermissionError(
+                    f"Insufficient privileges on {target}.\n\n"
+                    f"Ask your Databricks admin to grant the required privileges on {target}."
+                )
+
+
 # ── Browse ────────────────────────────────────────────────────────────────
 
 def list_catalogs() -> list[str]:
-    rows = _run_sql("SHOW CATALOGS")
+    try:
+        rows = _run_sql("SHOW CATALOGS")
+    except RuntimeError as e:
+        _check_permission_error(str(e), "the Unity Catalog metastore")
+        raise
     return sorted(r["catalog"] for r in rows)
 
 
 def list_schemas(catalog: str) -> list[str]:
     _validate(catalog)
-    rows = _run_sql(
-        f"SELECT schema_name FROM `{catalog}`.information_schema.schemata"
-    )
+    try:
+        rows = _run_sql(
+            f"SELECT schema_name FROM `{catalog}`.information_schema.schemata"
+        )
+    except RuntimeError as e:
+        _check_permission_error(str(e), f"CATALOG {catalog}")
+        raise
     return sorted(r["schema_name"] for r in rows)
 
 
 def list_tables(catalog: str, schema: str) -> list[dict]:
     _validate(f"{catalog}.{schema}")
-    rows = _run_sql(
-        f"SELECT table_name, table_type, comment "
-        f"FROM `{catalog}`.information_schema.tables "
-        f"WHERE table_schema = :schema",
-        params=[StatementParameterListItem(name="schema", value=schema)],
-    )
+    try:
+        rows = _run_sql(
+            f"SELECT table_name, table_type, comment "
+            f"FROM `{catalog}`.information_schema.tables "
+            f"WHERE table_schema = :schema",
+            params=[StatementParameterListItem(name="schema", value=schema)],
+        )
+    except RuntimeError as e:
+        _check_permission_error(str(e), f"SCHEMA {catalog}.{schema}")
+        raise
     result = []
     for r in rows:
         table_type = r.get("table_type") or ""
@@ -112,16 +154,20 @@ def get_columns(full_name: str) -> list[dict]:
         raise ValueError(f"Expected catalog.schema.table, got: {full_name}")
     catalog, schema, table = parts
 
-    rows = _run_sql(
-        f"SELECT column_name, data_type, is_nullable, comment "
-        f"FROM `{catalog}`.information_schema.columns "
-        f"WHERE table_schema = :schema AND table_name = :table "
-        f"ORDER BY ordinal_position",
-        params=[
-            StatementParameterListItem(name="schema", value=schema),
-            StatementParameterListItem(name="table", value=table),
-        ],
-    )
+    try:
+        rows = _run_sql(
+            f"SELECT column_name, data_type, is_nullable, comment "
+            f"FROM `{catalog}`.information_schema.columns "
+            f"WHERE table_schema = :schema AND table_name = :table "
+            f"ORDER BY ordinal_position",
+            params=[
+                StatementParameterListItem(name="schema", value=schema),
+                StatementParameterListItem(name="table", value=table),
+            ],
+        )
+    except RuntimeError as e:
+        _check_permission_error(str(e), f"TABLE {full_name}")
+        raise
     return [
         {
             "name": r["column_name"],
@@ -143,6 +189,10 @@ def apply_column_comment(full_name: str, col_name: str, comment: str) -> None:
     _validate(full_name)
     col_safe = col_name.replace("`", "``")
     escaped = _escape(comment)
-    _run_sql(
-        f"COMMENT ON COLUMN {_quote(full_name)}.`{col_safe}` IS '{escaped}'"
-    )
+    try:
+        _run_sql(
+            f"COMMENT ON COLUMN {_quote(full_name)}.`{col_safe}` IS '{escaped}'"
+        )
+    except RuntimeError as e:
+        _check_permission_error(str(e), f"TABLE {full_name}")
+        raise

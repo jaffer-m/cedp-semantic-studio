@@ -230,6 +230,9 @@ with st.sidebar:
         with st.spinner("Loading catalogs…"):
             try:
                 st.session_state.catalogs = catalog.list_catalogs()
+            except PermissionError as e:
+                st.error(f"**Access denied**\n\n{e}")
+                st.stop()
             except Exception as e:
                 st.error(f"Could not connect to Databricks: {e}")
                 st.stop()
@@ -243,6 +246,8 @@ with st.sidebar:
         with st.spinner("Loading schemas…"):
             try:
                 st.session_state.schemas = catalog.list_schemas(cat)
+            except PermissionError as e:
+                st.error(f"**Access denied**\n\n{e}")
             except Exception as e:
                 st.error(str(e))
 
@@ -255,6 +260,8 @@ with st.sidebar:
         with st.spinner("Loading tables…"):
             try:
                 st.session_state.tables = catalog.list_tables(cat, schema)
+            except PermissionError as e:
+                st.error(f"**Access denied**\n\n{e}")
             except Exception as e:
                 st.error(str(e))
 
@@ -269,6 +276,8 @@ with st.sidebar:
             with st.spinner("Loading columns…"):
                 try:
                     st.session_state.columns = catalog.get_columns(tbl_meta["full_name"])
+                except PermissionError as e:
+                    st.error(f"**Access denied**\n\n{e}")
                 except Exception as e:
                     st.error(str(e))
 
