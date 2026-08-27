@@ -2,6 +2,9 @@
 
 Uses the Databricks SDK serving endpoint query — no separate API key, host,
 or model name configuration needed. Auth comes from ~/.databrickscfg.
+
+Columns are processed in batches of BATCH_SIZE to stay within the endpoint's
+output token limit (empirically ~2500 tokens per call).
 """
 
 import json
@@ -14,6 +17,8 @@ from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 import config
 
 logger = logging.getLogger(__name__)
+
+BATCH_SIZE = 25  # columns per API call — keeps output well under token limits
 
 _SYSTEM_PROMPT = """You are a data catalog documentation expert. Generate specific, detailed,
 business-friendly descriptions for database table columns.
@@ -39,21 +44,8 @@ Output format:
 }"""
 
 
-def generate_column_descriptions(
-    ws: WorkspaceClient,
-    full_name: str,
-    columns: list[dict],
-) -> dict[str, str]:
-    """Call the LLM to generate descriptions for all columns in a table.
-
-    Args:
-        ws: authenticated WorkspaceClient from the Connect form session
-        full_name: catalog.schema.table
-        columns: list of {name, type, nullable, current_comment}
-
-    Returns:
-        {column_name: description} dict
-    """
+def _call_llm(ws: WorkspaceClient, full_name: str, columns: list[dict]) -> dict[str, str]:
+    """Single API call for a batch of columns. Returns {col_name: description}."""
     col_lines = "\n".join(
         f"  - {c['name']} ({c['type']})"
         + (f": currently '{c['current_comment']}'" if c.get("current_comment") else "")
@@ -76,7 +68,6 @@ def generate_column_descriptions(
     )
 
     content = response.choices[0].message.content.strip()
-    # Strip markdown fences if the model returns them anyway
     if content.startswith("```"):
         content = re.sub(r'^```[a-z]*\n?', '', content)
         content = re.sub(r'\n?```$', '', content)
@@ -85,5 +76,30 @@ def generate_column_descriptions(
         parsed = json.loads(content)
         return parsed.get("column_descriptions", {})
     except json.JSONDecodeError as e:
-        logger.error("LLM returned non-JSON: %s", content[:500])
-        raise RuntimeError(f"LLM response was not valid JSON: {e}") from e
+        logger.error("LLM returned non-JSON for batch ending at %s: %s",
+                     columns[-1]["name"], content[:300])
+        raise RuntimeError(
+            f"LLM response was not valid JSON (batch ending at '{columns[-1]['name']}'): {e}"
+        ) from e
+
+
+def generate_column_descriptions(
+    ws: WorkspaceClient,
+    full_name: str,
+    columns: list[dict],
+) -> dict[str, str]:
+    """Generate descriptions for all columns, batching to stay within token limits.
+
+    Args:
+        ws: authenticated WorkspaceClient from the Connect form session
+        full_name: catalog.schema.table
+        columns: list of {name, type, nullable, current_comment}
+
+    Returns:
+        {column_name: description} dict
+    """
+    results: dict[str, str] = {}
+    batches = [columns[i:i + BATCH_SIZE] for i in range(0, len(columns), BATCH_SIZE)]
+    for batch in batches:
+        results.update(_call_llm(ws, full_name, batch))
+    return results
