@@ -1,4 +1,4 @@
-# CEDP Data Dictionary
+# CEDP Semantic Studio
 
 A Streamlit app for generating, reviewing, and exporting AI-generated column descriptions for Databricks Unity Catalog tables. Built for the Clickstream Engagement Data Product (CEDP) team.
 
