@@ -1,16 +1,68 @@
 # Column Description Review
 
-A Streamlit app for reviewing, editing, and publishing AI-generated column descriptions to Databricks Unity Catalog tables. Supports Delta tables, DLT streaming tables, and materialized views.
+A Streamlit app for generating, reviewing, and exporting AI-generated column descriptions for Databricks Unity Catalog tables. Designed for the clickstream and digital behavioral analytics team.
 
-## Features
+Supports Delta tables, DLT streaming tables, and materialized views.
 
-- Browse any catalog → schema → table you have access to
-- Generate AI descriptions for all columns in one click
-- Descriptions are automatically humanized (AI-sounding language removed)
-- Edit any description inline before saving
-- Re-humanize individual columns with the ✨ button after manual edits
-- Apply changes back to the table with a single "Apply All" click
-- Works for Delta tables, DLT streaming tables, and materialized views
+---
+
+## Workflow
+
+```
+Connect → Browse → Generate → Review → Export → Apply in Databricks
+```
+
+### 1. Connect
+Enter your Databricks workspace URL and personal access token in the **☁️ Databricks Connection** sidebar panel. The app stores credentials in the session only — nothing is written to disk.
+
+If you have a `.env` file with `DATABRICKS_HOST` and `DATABRICKS_TOKEN`, those values pre-fill the form automatically.
+
+### 2. Browse
+Select a **Catalog → Schema → Table** from the cascading dropdowns. The app uses the Unity Catalog REST API to list objects you have access to — tables or schemas you cannot see are silently skipped.
+
+### 3. Generate & Humanize
+Click **⚡ Generate & Humanize** in the sidebar. The app:
+- Calls a Databricks Foundation Model endpoint (`databricks-meta-llama-3-3-70b-instruct`) to generate business-friendly column descriptions tailored to clickstream / digital behavioral analytics data
+- Runs a rule-based post-processor (`humanize.py`) to remove AI-sounding language — no extra API call
+
+Columns are batched in groups of 15 to stay within the model's output token limit. Large tables automatically split failing batches further.
+
+### 4. Review and Edit
+Descriptions appear in an editable grid. You can:
+- Edit any description directly in the text area
+- Click **✨** on a row to re-humanize that column after manual edits
+
+#### Team review via Excel
+1. Click **Download Review File (.xlsx)** to export a spreadsheet with proposed descriptions
+2. Share with stakeholders — reviewers fill in the yellow `reviewer_approved` (Yes/No) and `reviewer_notes` columns
+3. Upload the completed file using **Import Reviewed File** — approved descriptions load back into the grid
+
+### 5. Export as PySpark
+Once descriptions are ready, download a PySpark script and run it in a Databricks notebook:
+
+| Button | What it exports |
+|---|---|
+| **⬇ PySpark (All)** | All non-empty descriptions |
+| **⬇ PySpark (Approved)** | Only reviewer-approved descriptions (appears after import) |
+
+### 6. Apply in Databricks
+Open the downloaded `.py` file and paste it into a Databricks notebook cell. Run it to apply the column comments:
+
+```python
+# Example of generated file content:
+# Column descriptions for my_catalog.clickstream.fact_page_views
+# Generated 2026-08-28 09:14
+
+from pyspark.sql import SparkSession
+spark = SparkSession.builder.getOrCreate()
+
+spark.sql("""COMMENT ON COLUMN `my_catalog`.`clickstream`.`fact_page_views`.`hitKey` IS \"Unique identifier for a hit or event.\"""")
+spark.sql("""COMMENT ON COLUMN `my_catalog`.`clickstream`.`fact_page_views`.`sessionId` IS \"Surrogate key identifying the user session.\"""")
+```
+
+Each `spark.sql()` call applies one column comment using `COMMENT ON COLUMN` syntax, which works for Delta tables, DLT streaming tables, and materialized views.
+
+---
 
 ## Setup (first time)
 
@@ -26,52 +78,66 @@ cd column-descriptions
 ```
 python -m venv .venv
 .venv\Scripts\activate        # Windows
+source .venv/bin/activate     # Mac / Linux
 pip install -r requirements.txt
 ```
 
-### 3. Configure your credentials
+### 3. Configure credentials (optional)
 
-Copy the example config and fill in your values:
+Copy the example config to pre-fill the Connect form:
 
 ```
-copy .env.example .env
+copy .env.example .env        # Windows
+cp .env.example .env          # Mac / Linux
 ```
-
-Open `.env` and set these three values:
 
 | Variable | Where to find it |
 |---|---|
 | `DATABRICKS_HOST` | Your workspace URL — e.g. `https://adb-1234567890.azuredatabricks.net` |
-| `DATABRICKS_TOKEN` | Databricks UI → top-right avatar → Settings → Developer → Access tokens → Generate new token |
-| `DATABRICKS_WAREHOUSE_ID` | Databricks UI → SQL → Warehouses → click your warehouse → Connection details → last segment of the HTTP path |
+| `DATABRICKS_TOKEN` | Databricks UI → avatar → Settings → Developer → Access tokens → Generate new token |
+| `DATABRICKS_WAREHOUSE_ID` | Databricks UI → SQL Warehouses → your warehouse → Connection details → last segment of HTTP path |
 
-No separate API keys or model names needed — the token covers both catalog access and AI generation.
+`DATABRICKS_HOST` and `DATABRICKS_TOKEN` can also be entered directly in the app's Connect form — the `.env` file just pre-fills them.
+`DATABRICKS_WAREHOUSE_ID` is required in `.env` (used internally for DDL operations).
 
-### 5. Run the app
+### 4. Run the app
 
 ```
-streamlit run app.py
+python -m streamlit run app.py
 ```
 
-The app opens in your browser at `http://localhost:8501`.
+The app opens at `http://localhost:8501`.
+
+### 5. Stop the app
+
+Press **Ctrl+C** in the terminal, or click **⏹ Stop Server** at the bottom of the sidebar.
+
+---
 
 ## Team sharing
 
-Every team member follows the same setup steps. Each person uses their own Databricks personal access token — this ensures the app respects their individual Unity Catalog permissions. They will only see catalogs, schemas, and tables they have access to.
+Each team member follows the same setup steps and uses their own personal access token — this ensures the app respects individual Unity Catalog permissions. People only see catalogs, schemas, and tables they have access to.
 
-## How the humanize step works
+---
 
-After AI generation, descriptions are automatically cleaned up by `humanize.py` — a rule-based post-processor (no extra LLM call) that:
+## How humanize works
 
-- Swaps AI vocabulary for plain English (`bolstered` → `supported`, `delve` → `explore`, etc.)
-- Removes filler phrases (`It is worth noting that…`, `…highlighting its significance`)
+After AI generation, `humanize.py` cleans up descriptions with a rule-based post-processor (no extra LLM call):
+
+- Swaps AI vocabulary for plain English (`bolstered` → `supported`, `leverage` → `use`, etc.)
+- Removes filler phrases (`It is worth noting that…`, `highlighting its significance`)
 - Fixes unnatural constructions (`serves as` → `is`, `showcasing` → `showing`)
 
-You can re-run humanize on any individual column after editing by clicking the ✨ button on that row.
+Click **✨** on any row to re-run humanize after a manual edit.
 
-## Permissions required in Databricks
+---
 
-- `USE CATALOG` on the catalog
-- `USE SCHEMA` on the schema
-- `SELECT` on the table (to read column metadata)
-- `MODIFY` on the table (to write column comments)
+## Permissions required
+
+| Privilege | Required for |
+|---|---|
+| `USE CATALOG` | Browsing schemas |
+| `USE SCHEMA` | Browsing tables |
+| `SELECT` on the table | Reading column metadata |
+
+Write access (`MODIFY`) is no longer required — descriptions are applied manually via the exported PySpark script, using whichever account runs the notebook.
