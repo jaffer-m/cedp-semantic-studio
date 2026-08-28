@@ -120,6 +120,18 @@ Each team member follows the same setup steps and uses their own personal access
 
 ---
 
+## Why Databricks Foundation Model APIs instead of an Anthropic key
+
+The app calls the LLM through the Databricks serving endpoint (`databricks-meta-llama-3-3-70b-instruct`) rather than the Anthropic API for three reasons:
+
+1. **No separate key to manage** — the same personal access token used to browse the catalog also authenticates LLM calls. There is nothing extra to generate, rotate, or share with the team.
+2. **Data stays inside the workspace** — prompts and column metadata never leave your Databricks environment. Using an external API (Anthropic, OpenAI) would send table and column names to a third-party endpoint, which may conflict with data governance or security policies.
+3. **No additional cost centre** — Foundation Model API usage is billed through your existing Databricks contract, not a separate AI vendor account.
+
+If you ever need to switch models, update `SERVING_ENDPOINT` in `config.py` to any other serving endpoint available in your workspace.
+
+---
+
 ## How humanize works
 
 After AI generation, `humanize.py` cleans up descriptions with a rule-based post-processor (no extra LLM call):
