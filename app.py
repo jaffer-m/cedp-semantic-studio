@@ -25,22 +25,116 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+  /* ── Table type badges ─────────────────────────────────── */
   .type-badge {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 12px;
-    font-size: 12px;
-    font-weight: 600;
-    margin-left: 10px;
+    display: inline-block; padding: 2px 10px; border-radius: 12px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+    text-transform: uppercase; margin-left: 10px; vertical-align: middle;
   }
-  .badge-dlt    { background: #14532d; color: #4ade80; }
-  .badge-mv     { background: #451a03; color: #fbbf24; }
-  .badge-delta  { background: #1e1b4b; color: #818cf8; }
-  .col-label    { font-size: 12px; color: #8b90a5; margin-bottom: 2px; }
-  .current-desc { font-size: 13px; color: #c4c8d8; padding: 6px 0; min-height: 40px; }
-  .divider      { border-top: 1px solid #2e3345; margin: 8px 0; }
+  .badge-dlt   { background: #14532d; color: #4ade80; }
+  .badge-mv    { background: #451a03; color: #fbbf24; }
+  .badge-delta { background: #1e1b4b; color: #818cf8; }
+
+  /* ── Column name pill ──────────────────────────────────── */
+  .col-name {
+    display: inline-block; background: #141824; border: 1px solid #2e3755;
+    border-radius: 5px; padding: 3px 9px;
+    font-family: 'Courier New', monospace; font-size: 13px; color: #c7d2fe;
+    word-break: break-all; line-height: 1.5;
+  }
+
+  /* ── Data type pills ───────────────────────────────────── */
+  .dt-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; font-family: monospace; white-space: nowrap;
+  }
+  .dt-string  { background: #0f2744; color: #7dd3fc; }
+  .dt-int     { background: #0a2818; color: #86efac; }
+  .dt-double  { background: #132010; color: #a3e635; }
+  .dt-bool    { background: #2d1503; color: #fb923c; }
+  .dt-date    { background: #1a0f38; color: #c084fc; }
+  .dt-other   { background: #161b2e; color: #94a3b8; }
+
+  /* ── Column grid ───────────────────────────────────────── */
+  .col-label {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.9px;
+    text-transform: uppercase; color: #4f5a7a; margin-bottom: 4px;
+  }
+  .current-desc {
+    font-size: 13px; color: #8895b3; padding: 6px 2px;
+    min-height: 44px; line-height: 1.55;
+  }
+  .divider { border-top: 1px solid #1a2035; margin: 6px 0; }
+
+  /* ── Review status chips ───────────────────────────────── */
+  .chip {
+    display: inline-block; padding: 2px 9px; border-radius: 10px;
+    font-size: 11px; font-weight: 600; margin: 3px 2px 0 0; line-height: 1.6;
+  }
+  .chip-approved { background: #0d3320; color: #4ade80; border: 1px solid #166534; }
+  .chip-rejected { background: #2d0a0a; color: #f87171; border: 1px solid #7f1d1d; }
+  .chip-note     { background: #111827; color: #94a3b8; border: 1px solid #1e2a3a; }
+
+  /* ── Hint / info card ──────────────────────────────────── */
+  .hint-card {
+    background: rgba(99,102,241,0.07); border: 1px solid rgba(99,102,241,0.22);
+    border-radius: 8px; padding: 11px 16px; font-size: 13px; color: #a5b4fc;
+    margin: 4px 0 16px 0; line-height: 1.5;
+  }
+
+  /* ── Section headers ───────────────────────────────────── */
+  .section-title {
+    font-size: 13px; font-weight: 700; color: #cbd5e1;
+    margin-bottom: 4px; letter-spacing: 0.2px;
+  }
+  .section-caption {
+    font-size: 12px; color: #4f5a7a; margin-bottom: 10px; line-height: 1.5;
+  }
+
+  /* ── Overview label ────────────────────────────────────── */
+  .overview-label {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.9px;
+    text-transform: uppercase; color: #6366f1; margin-bottom: 6px;
+  }
+
+  /* ── Empty state ───────────────────────────────────────── */
+  .empty-state {
+    text-align: center; padding: 64px 32px; color: #4f5a7a;
+  }
+  .empty-state .es-icon { font-size: 52px; margin-bottom: 18px; line-height: 1; }
+  .empty-state h3 { color: #7c8db5; font-size: 20px; margin: 0 0 10px 0; font-weight: 600; }
+  .empty-state p  { font-size: 14px; line-height: 1.75; margin: 0; }
+  .empty-state .step {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: #0f1422; border: 1px solid #1e2a3a;
+    border-radius: 8px; padding: 8px 16px; margin: 6px 4px;
+    font-size: 13px; color: #64748b;
+  }
+  .empty-state .step-num {
+    background: #1e2a45; color: #818cf8; border-radius: 50%;
+    width: 20px; height: 20px; display: inline-flex;
+    align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; flex-shrink: 0;
+  }
 </style>
 """, unsafe_allow_html=True)
+
+
+def _type_pill(dtype: str) -> str:
+    dl = dtype.lower()
+    if any(x in dl for x in ("string", "varchar", "char", "text")):
+        cls = "dt-string"
+    elif any(x in dl for x in ("bigint", "int", "long", "short", "byte", "tinyint", "smallint")):
+        cls = "dt-int"
+    elif any(x in dl for x in ("double", "float", "decimal", "numeric", "real")):
+        cls = "dt-double"
+    elif "bool" in dl:
+        cls = "dt-bool"
+    elif any(x in dl for x in ("date", "timestamp")):
+        cls = "dt-date"
+    else:
+        cls = "dt-other"
+    return f"<span class='dt-pill {cls}'>{dtype}</span>"
 
 
 # ── Excel export / import helpers ─────────────────────────────────────────
@@ -416,7 +510,20 @@ tbl = st.session_state.table_meta
 cols = st.session_state.columns
 
 if not tbl:
-    st.markdown("### Select a table from the sidebar to get started.")
+    st.markdown("""
+<div class='empty-state'>
+  <div class='es-icon'>📖</div>
+  <h3>Select a table to get started</h3>
+  <p>Browse your Unity Catalog from the sidebar, then generate AI descriptions with one click.</p>
+  <br>
+  <div>
+    <span class='step'><span class='step-num'>1</span>Connect to Databricks</span>
+    <span class='step'><span class='step-num'>2</span>Pick a catalog → schema → table</span>
+    <span class='step'><span class='step-num'>3</span>Click ⚡ Generate &amp; Humanize</span>
+    <span class='step'><span class='step-num'>4</span>Review, export &amp; apply in Databricks</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
     st.stop()
 
 type_label = tbl.get("type_label", "Delta Table")
@@ -432,7 +539,7 @@ st.markdown(
 )
 
 # ── Table overview ────────────────────────────────────────────────────────
-st.markdown("**Table Overview**")
+st.markdown("<div class='overview-label'>Table Overview</div>", unsafe_allow_html=True)
 td_left, td_right = st.columns([6, 1])
 table_desc = td_left.text_area(
     "table_overview",
@@ -458,9 +565,10 @@ if not cols:
     st.stop()
 
 if not st.session_state.generated:
-    st.info(
-        "Click **⚡ Generate & Humanize** in the sidebar to generate AI descriptions, "
-        "or scroll down to review and edit existing descriptions."
+    st.markdown(
+        "<div class='hint-card'>⚡ Click <strong>Generate &amp; Humanize</strong> in the sidebar "
+        "to produce AI descriptions — or type directly in the suggestion fields below.</div>",
+        unsafe_allow_html=True,
     )
 
 st.divider()
@@ -470,11 +578,7 @@ st.divider()
 export_col, import_col = st.columns(2)
 
 with export_col:
-    st.markdown("**📤 Share for Review**")
-    st.caption(
-        "Download an Excel file to share with your team. "
-        "They fill in the yellow columns (approval + notes) and return it."
-    )
+    st.markdown("<div class='section-title'>📤 Share for Review</div><div class='section-caption'>Download an Excel file for your team. They fill in the approval + notes columns and return it.</div>", unsafe_allow_html=True)
     if cols:
         xlsx = _build_excel(tbl["full_name"], cols, st.session_state.suggestions, st.session_state.table_description)
         st.download_button(
@@ -486,11 +590,7 @@ with export_col:
         )
 
 with import_col:
-    st.markdown("**📥 Import Reviewed File**")
-    st.caption(
-        "Upload the completed file (.xlsx or .csv). "
-        "Approved rows load into the grid. Use **Apply Approved Only** to publish just those."
-    )
+    st.markdown("<div class='section-title'>📥 Import Reviewed File</div><div class='section-caption'>Upload the completed file (.xlsx or .csv). Approved rows load back into the grid automatically.</div>", unsafe_allow_html=True)
     uploaded = st.file_uploader(
         "Upload reviewed file", type=["xlsx", "csv"],
         label_visibility="collapsed", key="review_upload",
@@ -527,7 +627,7 @@ h1.markdown("<div class='col-label'>Column</div>", unsafe_allow_html=True)
 h2.markdown("<div class='col-label'>Type</div>", unsafe_allow_html=True)
 h3.markdown("<div class='col-label'>Current Description</div>", unsafe_allow_html=True)
 h4.markdown("<div class='col-label'>AI Suggestion (editable)</div>", unsafe_allow_html=True)
-h5.markdown("<div class='col-label'>Humanize</div>", unsafe_allow_html=True)
+h5.markdown("<div class='col-label'>✨</div>", unsafe_allow_html=True)
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
 for col in cols:
@@ -535,15 +635,23 @@ for col in cols:
     review = st.session_state.review_import.get(name)
     c1, c2, c3, c4, c5 = st.columns([2, 1.2, 3, 3, 1])
 
-    c1.markdown(f"**{name}**")
+    review_html = ""
     if review:
-        c1.caption("✅ Approved" if review["approved"] else "⛔ Not approved")
+        if review["approved"]:
+            review_html += "<span class='chip chip-approved'>✓ Approved</span>"
+        else:
+            review_html += "<span class='chip chip-rejected'>✗ Rejected</span>"
         if review["notes"]:
-            c1.caption(f"💬 {review['notes']}")
+            review_html += f"<br><span class='chip chip-note'>💬 {review['notes']}</span>"
 
-    c2.caption(col["type"])
+    c1.markdown(
+        f"<div class='col-name'>{name}</div>{review_html}",
+        unsafe_allow_html=True,
+    )
+
+    c2.markdown(_type_pill(col["type"]), unsafe_allow_html=True)
     c3.markdown(
-        f"<div class='current-desc'>{col['current_comment'] or '<em>—</em>'}</div>",
+        f"<div class='current-desc'>{col['current_comment'] or '<span style=\"color:#2e3755\">—</span>'}</div>",
         unsafe_allow_html=True,
     )
 
@@ -588,18 +696,25 @@ if st.button("🗑 Clear", use_container_width=False):
 
 # ── Export as code ────────────────────────────────────────────────────────
 
-st.markdown("")
-st.markdown("**📋 Export as code** — paste into a Databricks notebook to apply descriptions manually")
+st.markdown("<div class='section-title'>📋 Export as PySpark</div><div class='section-caption'>Download or copy the script — paste into a Databricks notebook to apply descriptions.</div>", unsafe_allow_html=True)
 
 safe_name = tbl["full_name"].replace(".", "_")
 table_desc_export = st.session_state.table_description
 py_all = _build_pyspark_script(tbl["full_name"], st.session_state.suggestions, table_desc_export)
 
-exp1, exp2, _ = st.columns([1.8, 1.8, 4.4])
-exp1.download_button("⬇ PySpark (All)", data=py_all,
-    file_name=f"{safe_name}_all.py", mime="text/plain", use_container_width=True)
-
 if has_approved:
     py_app = _build_pyspark_script(tbl["full_name"], approved_only, table_desc_export)
-    exp2.download_button("⬇ PySpark (Approved)", data=py_app,
+
+exp1, exp2, _ = st.columns([1.8, 1.8, 4.4])
+exp1.download_button("⬇ Download (All)", data=py_all,
+    file_name=f"{safe_name}_all.py", mime="text/plain", use_container_width=True)
+if has_approved:
+    exp2.download_button("⬇ Download (Approved only)", data=py_app,
         file_name=f"{safe_name}_approved.py", mime="text/plain", use_container_width=True)
+
+with st.expander("Preview PySpark (All)", expanded=False):
+    st.code(py_all, language="python")
+
+if has_approved:
+    with st.expander("Preview PySpark (Approved only)", expanded=False):
+        st.code(py_app, language="python")
