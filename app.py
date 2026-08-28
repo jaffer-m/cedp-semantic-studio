@@ -11,7 +11,6 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 import config
-import catalog
 import ai_gen
 import humanize as hz
 from databricks_client import DatabricksClient
@@ -223,7 +222,7 @@ def _init_state():
         # Browse
         "catalogs": [], "schemas": [], "tables": [], "columns": [],
         "selected_catalog": None, "selected_schema": None, "selected_table": None,
-        "table_meta": {}, "suggestions": {}, "apply_results": {},
+        "table_meta": {}, "suggestions": {},
         "generated": False,
         "gen_error": None,    # persists generation errors across reruns
         "review_import": {},  # {col_name: {approved, notes, proposed_description}}
@@ -250,40 +249,13 @@ def _connect_databricks(host: str, token: str) -> None:
     st.session_state.current_user = user
     # Reset browse state so catalogs reload with new credentials
     for key in ("catalogs", "schemas", "tables", "columns", "table_meta",
-                "suggestions", "apply_results", "review_import"):
+                "suggestions", "review_import"):
         st.session_state[key] = [] if isinstance(st.session_state[key], list) else {}
     st.session_state.generated = False
     st.session_state.selected_catalog = None
     st.session_state.selected_schema = None
     st.session_state.selected_table = None
     st.toast(f"Connected as {user}", icon="✅")
-
-
-# ── Apply helper ──────────────────────────────────────────────────────────
-
-def _do_apply(full_name: str, suggestions: dict) -> None:
-    items = [(k, v) for k, v in suggestions.items() if v.strip()]
-    if not items:
-        st.warning("Nothing to apply.")
-        return
-    ws = st.session_state.db_client._ws
-    results = {}
-    progress = st.progress(0, text="Applying…")
-    for i, (col_name, comment) in enumerate(items):
-        try:
-            catalog.apply_column_comment(ws, full_name, col_name, comment)
-            results[col_name] = "ok"
-        except Exception as e:
-            results[col_name] = f"error: {e}"
-        progress.progress((i + 1) / len(items), text=f"Saved {i + 1}/{len(items)}")
-    st.session_state.apply_results = results
-    progress.empty()
-    failed = [k for k, v in results.items() if v != "ok"]
-    if failed:
-        st.warning(f"Some columns failed to save: {', '.join(failed)}")
-    else:
-        st.success(f"All {len(results)} column descriptions saved.")
-    st.rerun()
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────
@@ -294,7 +266,7 @@ def _reset(**extra):
     for col in st.session_state.get("columns", []):
         st.session_state.pop(f"text_{col['name']}", None)
     st.session_state.update(dict(
-        columns=[], suggestions={}, apply_results={},
+        columns=[], suggestions={},
         generated=False, gen_error=None, review_import={}, **extra
     ))
 
@@ -413,7 +385,6 @@ with st.sidebar:
             val = humanized.get(c["name"], c["current_comment"])
             st.session_state.suggestions[c["name"]] = val
             st.session_state[f"text_{c['name']}"] = val  # keep widget in sync
-        st.session_state.apply_results = {}
         st.session_state.review_import = {}
         st.session_state.generated = True
         st.rerun()
@@ -560,12 +531,6 @@ for col in cols:
             st.session_state[f"text_{name}"] = val  # keep widget in sync
             st.rerun()
 
-    result = st.session_state.apply_results.get(name)
-    if result == "ok":
-        c4.success("Saved", icon="✅")
-    elif result and result.startswith("error"):
-        c4.error(result[7:])
-
     st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
 
@@ -579,21 +544,10 @@ approved_only = {
     if data["approved"] and name in st.session_state.suggestions
 }
 
-btn1, btn2, btn3, _ = st.columns([1.5, 1.8, 1, 3.7])
-
-if btn1.button("💾 Apply All", type="primary", use_container_width=True):
-    _do_apply(tbl["full_name"], st.session_state.suggestions)
-
-if btn2.button("💾 Apply Approved Only",
-        disabled=not has_approved, use_container_width=True,
-        help="Only applies columns marked 'Yes' by the reviewer"):
-    _do_apply(tbl["full_name"], approved_only)
-
-if btn3.button("Clear", use_container_width=True):
+if st.button("🗑 Clear", use_container_width=False):
     for col in st.session_state.columns:
         st.session_state.pop(f"text_{col['name']}", None)
     st.session_state.suggestions = {}
-    st.session_state.apply_results = {}
     st.session_state.review_import = {}
     st.session_state.generated = False
     st.session_state.gen_error = None
