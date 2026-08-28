@@ -1,6 +1,6 @@
 # Column Description Review
 
-A Streamlit app for generating, reviewing, and exporting AI-generated column descriptions for Databricks Unity Catalog tables. Designed for the clickstream and digital behavioral analytics team.
+A Streamlit app for generating, reviewing, and exporting AI-generated column descriptions for Databricks Unity Catalog tables. Designed for the Clickstream Engagement Data Product (CEDP) team.
 
 Supports Delta tables, DLT streaming tables, and materialized views.
 
