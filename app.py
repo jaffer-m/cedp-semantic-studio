@@ -1,7 +1,9 @@
 """Column Description Review — Streamlit app."""
 
 import io
+import os
 import csv
+from datetime import datetime
 
 import streamlit as st
 import openpyxl
@@ -169,6 +171,43 @@ def _parse_csv(raw: bytes) -> dict[str, dict]:
             "notes": (row.get("reviewer_notes") or "").strip(),
         }
     return result
+
+
+# ── Code export helpers ───────────────────────────────────────────────────
+
+def _build_sql_script(full_name: str, suggestions: dict) -> str:
+    quoted = ".".join(f"`{p}`" for p in full_name.split("."))
+    lines = [
+        f"-- Column descriptions for {full_name}",
+        f"-- Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "",
+    ]
+    for col_name, desc in suggestions.items():
+        if desc.strip():
+            col_safe = col_name.replace("`", "``")
+            escaped  = desc.replace("'", "\\'")
+            lines.append(f"COMMENT ON COLUMN {quoted}.`{col_safe}` IS '{escaped}';")
+    return "\n".join(lines)
+
+
+def _build_pyspark_script(full_name: str, suggestions: dict) -> str:
+    quoted = ".".join(f"`{p}`" for p in full_name.split("."))
+    lines = [
+        f"# Column descriptions for {full_name}",
+        f"# Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "",
+        "from pyspark.sql import SparkSession",
+        "spark = SparkSession.builder.getOrCreate()",
+        "",
+    ]
+    for col_name, desc in suggestions.items():
+        if desc.strip():
+            col_safe = col_name.replace("`", "``")
+            escaped  = desc.replace('"', '\\"')
+            lines.append(
+                f'spark.sql("""COMMENT ON COLUMN {quoted}.`{col_safe}` IS \\"{escaped}\\"""")'
+            )
+    return "\n".join(lines)
 
 
 # ── Session state defaults ────────────────────────────────────────────────
@@ -385,6 +424,11 @@ with st.sidebar:
     if st.session_state.generated:
         st.caption("✅ Descriptions generated and humanized.")
 
+    st.divider()
+    if st.button("⏹ Stop Server", use_container_width=True,
+                 help="Shuts down the Streamlit process. Restart with: python -m streamlit run app.py"):
+        os._exit(0)
+
 
 # ── Main area ─────────────────────────────────────────────────────────────
 
@@ -529,6 +573,12 @@ for col in cols:
 
 st.markdown("")
 has_approved = any(v["approved"] for v in st.session_state.review_import.values())
+approved_only = {
+    name: st.session_state.suggestions[name]
+    for name, data in st.session_state.review_import.items()
+    if data["approved"] and name in st.session_state.suggestions
+}
+
 btn1, btn2, btn3, _ = st.columns([1.5, 1.8, 1, 3.7])
 
 if btn1.button("💾 Apply All", type="primary", use_container_width=True):
@@ -537,11 +587,6 @@ if btn1.button("💾 Apply All", type="primary", use_container_width=True):
 if btn2.button("💾 Apply Approved Only",
         disabled=not has_approved, use_container_width=True,
         help="Only applies columns marked 'Yes' by the reviewer"):
-    approved_only = {
-        name: st.session_state.suggestions[name]
-        for name, data in st.session_state.review_import.items()
-        if data["approved"] and name in st.session_state.suggestions
-    }
     _do_apply(tbl["full_name"], approved_only)
 
 if btn3.button("Clear", use_container_width=True):
@@ -553,3 +598,26 @@ if btn3.button("Clear", use_container_width=True):
     st.session_state.generated = False
     st.session_state.gen_error = None
     st.rerun()
+
+# ── Export as code ────────────────────────────────────────────────────────
+
+st.markdown("")
+st.markdown("**📋 Export as code** — paste into a Databricks notebook to apply descriptions manually")
+
+safe_name = tbl["full_name"].replace(".", "_")
+sql_all = _build_sql_script(tbl["full_name"], st.session_state.suggestions)
+py_all  = _build_pyspark_script(tbl["full_name"], st.session_state.suggestions)
+
+exp1, exp2, exp3, exp4, _ = st.columns([1.5, 1.8, 1.5, 1.8, 1.2])
+exp1.download_button("⬇ SQL (All)", data=sql_all,
+    file_name=f"{safe_name}_all.sql", mime="text/plain", use_container_width=True)
+exp2.download_button("⬇ PySpark (All)", data=py_all,
+    file_name=f"{safe_name}_all.py", mime="text/plain", use_container_width=True)
+
+if has_approved:
+    sql_app = _build_sql_script(tbl["full_name"], approved_only)
+    py_app  = _build_pyspark_script(tbl["full_name"], approved_only)
+    exp3.download_button("⬇ SQL (Approved)", data=sql_app,
+        file_name=f"{safe_name}_approved.sql", mime="text/plain", use_container_width=True)
+    exp4.download_button("⬇ PySpark (Approved)", data=py_app,
+        file_name=f"{safe_name}_approved.py", mime="text/plain", use_container_width=True)
