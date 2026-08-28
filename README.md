@@ -1,6 +1,6 @@
-# Column Description Review
+# CEDP Data Dictionary
 
-A Streamlit app for generating, reviewing, and exporting AI-generated column descriptions for Databricks Unity Catalog tables. Designed for the Clickstream Engagement Data Product (CEDP) team.
+A Streamlit app for generating, reviewing, and exporting AI-generated column descriptions for Databricks Unity Catalog tables. Built for the Clickstream Engagement Data Product (CEDP) team.
 
 Supports Delta tables, DLT streaming tables, and materialized views.
 

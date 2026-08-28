@@ -16,8 +16,8 @@ import humanize as hz
 from databricks_client import DatabricksClient
 
 st.set_page_config(
-    page_title="Column Descriptions",
-    page_icon="🗂️",
+    page_title="CEDP Data Dictionary",
+    page_icon="📖",
     layout="wide",
 )
 
@@ -257,8 +257,8 @@ def _reset(**extra):
 
 
 with st.sidebar:
-    st.title("🗂️ Column Descriptions")
-    st.caption("Browse Unity Catalog and manage column-level descriptions.")
+    st.title("📖 CEDP Data Dictionary")
+    st.caption("Generate and export column descriptions for Unity Catalog tables.")
 
     # ── Connect form ──────────────────────────────────────────────────────
     connected = st.session_state.connected
