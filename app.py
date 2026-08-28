@@ -174,21 +174,6 @@ def _parse_csv(raw: bytes) -> dict[str, dict]:
 
 # ── Code export helpers ───────────────────────────────────────────────────
 
-def _build_sql_script(full_name: str, suggestions: dict) -> str:
-    quoted = ".".join(f"`{p}`" for p in full_name.split("."))
-    lines = [
-        f"-- Column descriptions for {full_name}",
-        f"-- Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "",
-    ]
-    for col_name, desc in suggestions.items():
-        if desc.strip():
-            col_safe = col_name.replace("`", "``")
-            escaped  = desc.replace("'", "\\'")
-            lines.append(f"COMMENT ON COLUMN {quoted}.`{col_safe}` IS '{escaped}';")
-    return "\n".join(lines)
-
-
 def _build_pyspark_script(full_name: str, suggestions: dict) -> str:
     quoted = ".".join(f"`{p}`" for p in full_name.split("."))
     lines = [
@@ -559,19 +544,13 @@ st.markdown("")
 st.markdown("**📋 Export as code** — paste into a Databricks notebook to apply descriptions manually")
 
 safe_name = tbl["full_name"].replace(".", "_")
-sql_all = _build_sql_script(tbl["full_name"], st.session_state.suggestions)
-py_all  = _build_pyspark_script(tbl["full_name"], st.session_state.suggestions)
+py_all = _build_pyspark_script(tbl["full_name"], st.session_state.suggestions)
 
-exp1, exp2, exp3, exp4, _ = st.columns([1.5, 1.8, 1.5, 1.8, 1.2])
-exp1.download_button("⬇ SQL (All)", data=sql_all,
-    file_name=f"{safe_name}_all.sql", mime="text/plain", use_container_width=True)
-exp2.download_button("⬇ PySpark (All)", data=py_all,
+exp1, exp2, _ = st.columns([1.8, 1.8, 4.4])
+exp1.download_button("⬇ PySpark (All)", data=py_all,
     file_name=f"{safe_name}_all.py", mime="text/plain", use_container_width=True)
 
 if has_approved:
-    sql_app = _build_sql_script(tbl["full_name"], approved_only)
-    py_app  = _build_pyspark_script(tbl["full_name"], approved_only)
-    exp3.download_button("⬇ SQL (Approved)", data=sql_app,
-        file_name=f"{safe_name}_approved.sql", mime="text/plain", use_container_width=True)
-    exp4.download_button("⬇ PySpark (Approved)", data=py_app,
+    py_app = _build_pyspark_script(tbl["full_name"], approved_only)
+    exp2.download_button("⬇ PySpark (Approved)", data=py_app,
         file_name=f"{safe_name}_approved.py", mime="text/plain", use_container_width=True)
