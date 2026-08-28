@@ -107,6 +107,34 @@ def _call_llm_resilient(ws: WorkspaceClient, full_name: str, columns: list[dict]
         return {**left, **right}
 
 
+def generate_table_description(
+    ws: WorkspaceClient,
+    full_name: str,
+    columns: list[dict],
+    current_comment: str = "",
+) -> str:
+    """Generate a 2–3 sentence business overview for the table. Returns plain text."""
+    col_names = ", ".join(c["name"] for c in columns[:30])
+    user_msg = (
+        f"Write a concise 2-3 sentence business description for the table `{full_name}`.\n\n"
+        f"Column names (sample): {col_names}\n"
+        + (f"Existing description: {current_comment}\n" if current_comment else "")
+        + "\nDescribe what the table contains, its grain, and its primary use. "
+        "Be specific to clickstream and digital behavioral analytics. "
+        "Return only the description text — no JSON, no bullet points, no formatting."
+    )
+    response = ws.serving_endpoints.query(
+        name=config.SERVING_ENDPOINT,
+        messages=[
+            ChatMessage(role=ChatMessageRole.SYSTEM, content=_SYSTEM_PROMPT),
+            ChatMessage(role=ChatMessageRole.USER, content=user_msg),
+        ],
+        temperature=0.2,
+        max_tokens=300,
+    )
+    return response.choices[0].message.content.strip()
+
+
 def generate_column_descriptions(
     ws: WorkspaceClient,
     full_name: str,

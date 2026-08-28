@@ -64,7 +64,7 @@ _BORDER        = Border(
 )
 
 
-def _build_excel(full_name: str, columns: list[dict], suggestions: dict) -> bytes:
+def _build_excel(full_name: str, columns: list[dict], suggestions: dict, table_description: str = "") -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Column Review"
@@ -83,17 +83,26 @@ def _build_excel(full_name: str, columns: list[dict], suggestions: dict) -> byte
     instr.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
     ws.row_dimensions[1].height = 36
 
-    # Header row (row 2)
+    # Table overview row (row 2)
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(_HEADERS))
+    td_cell = ws.cell(row=2, column=1,
+        value=f"Table Overview: {table_description or '(not generated)'}")
+    td_cell.fill = PatternFill("solid", fgColor="E8F0FE")
+    td_cell.font = Font(italic=True, color="1A237E", size=10)
+    td_cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    ws.row_dimensions[2].height = 30
+
+    # Header row (row 3)
     for col_idx, header in enumerate(_HEADERS, 1):
-        cell = ws.cell(row=2, column=col_idx, value=header)
+        cell = ws.cell(row=3, column=col_idx, value=header)
         cell.fill = _FILL_HEADER
         cell.font = _FONT_HEADER
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = _BORDER
-    ws.row_dimensions[2].height = 28
+    ws.row_dimensions[3].height = 28
 
-    # Data rows
-    for row_idx, col in enumerate(columns, 3):
+    # Data rows (row 4+)
+    for row_idx, col in enumerate(columns, 4):
         row_data = {
             "table": full_name,
             "column_name": col["name"],
@@ -117,7 +126,7 @@ def _build_excel(full_name: str, columns: list[dict], suggestions: dict) -> byte
     for i, w in enumerate([30, 20, 15, 45, 45, 18, 35], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
-    ws.freeze_panes = "A3"
+    ws.freeze_panes = "A4"
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -174,7 +183,7 @@ def _parse_csv(raw: bytes) -> dict[str, dict]:
 
 # ── Code export helpers ───────────────────────────────────────────────────
 
-def _build_pyspark_script(full_name: str, suggestions: dict) -> str:
+def _build_pyspark_script(full_name: str, suggestions: dict, table_description: str = "") -> str:
     quoted = ".".join(f"`{p}`" for p in full_name.split("."))
     lines = [
         f"# Column descriptions for {full_name}",
@@ -184,6 +193,10 @@ def _build_pyspark_script(full_name: str, suggestions: dict) -> str:
         "spark = SparkSession.builder.getOrCreate()",
         "",
     ]
+    if table_description.strip():
+        escaped = table_description.replace('"', '\\"')
+        lines.append(f'spark.sql("""COMMENT ON TABLE {quoted} IS \\"{escaped}\\"""")')
+        lines.append("")
     for col_name, desc in suggestions.items():
         if desc.strip():
             col_safe = col_name.replace("`", "``")
@@ -207,7 +220,7 @@ def _init_state():
         # Browse
         "catalogs": [], "schemas": [], "tables": [], "columns": [],
         "selected_catalog": None, "selected_schema": None, "selected_table": None,
-        "table_meta": {}, "suggestions": {},
+        "table_meta": {}, "suggestions": {}, "table_description": "",
         "generated": False,
         "gen_error": None,    # persists generation errors across reruns
         "review_import": {},  # {col_name: {approved, notes, proposed_description}}
@@ -250,8 +263,9 @@ def _reset(**extra):
     # into the next table's widgets when column names happen to match.
     for col in st.session_state.get("columns", []):
         st.session_state.pop(f"text_{col['name']}", None)
+    st.session_state.pop("text_table_desc", None)
     st.session_state.update(dict(
-        columns=[], suggestions={},
+        columns=[], suggestions={}, table_description="",
         generated=False, gen_error=None, review_import={}, **extra
     ))
 
@@ -370,6 +384,16 @@ with st.sidebar:
             val = humanized.get(c["name"], c["current_comment"])
             st.session_state.suggestions[c["name"]] = val
             st.session_state[f"text_{c['name']}"] = val  # keep widget in sync
+        with st.spinner("Generating table overview…"):
+            try:
+                raw_td = ai_gen.generate_table_description(
+                    ws, tbl["full_name"], cols, tbl.get("comment", "")
+                )
+                td = hz.humanize(raw_td)
+            except Exception:
+                td = st.session_state.table_description  # keep existing on failure
+        st.session_state.table_description = td
+        st.session_state["text_table_desc"] = td
         st.session_state.review_import = {}
         st.session_state.generated = True
         st.rerun()
@@ -407,6 +431,28 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ── Table overview ────────────────────────────────────────────────────────
+st.markdown("**Table Overview**")
+td_left, td_right = st.columns([6, 1])
+table_desc = td_left.text_area(
+    "table_overview",
+    value=st.session_state.table_description or tbl.get("comment", ""),
+    height=80,
+    label_visibility="collapsed",
+    key="text_table_desc",
+    placeholder="Click ⚡ Generate & Humanize to produce an AI overview, or type one manually.",
+)
+st.session_state.table_description = table_desc
+with td_right:
+    st.markdown("<div style='padding-top:4px'></div>", unsafe_allow_html=True)
+    if st.button("✨", key="hz_table_desc", help="Re-humanize table description"):
+        humanized_td = hz.humanize(table_desc)
+        st.session_state.table_description = humanized_td
+        st.session_state["text_table_desc"] = humanized_td
+        st.rerun()
+if tbl.get("comment"):
+    st.caption(f"Current in Databricks: {tbl['comment']}")
+
 if not cols:
     st.info("No columns found for this table, or you may not have SELECT access.")
     st.stop()
@@ -430,7 +476,7 @@ with export_col:
         "They fill in the yellow columns (approval + notes) and return it."
     )
     if cols:
-        xlsx = _build_excel(tbl["full_name"], cols, st.session_state.suggestions)
+        xlsx = _build_excel(tbl["full_name"], cols, st.session_state.suggestions, st.session_state.table_description)
         st.download_button(
             label="Download Review File (.xlsx)",
             data=xlsx,
@@ -532,7 +578,9 @@ approved_only = {
 if st.button("🗑 Clear", use_container_width=False):
     for col in st.session_state.columns:
         st.session_state.pop(f"text_{col['name']}", None)
+    st.session_state.pop("text_table_desc", None)
     st.session_state.suggestions = {}
+    st.session_state.table_description = ""
     st.session_state.review_import = {}
     st.session_state.generated = False
     st.session_state.gen_error = None
@@ -544,13 +592,14 @@ st.markdown("")
 st.markdown("**📋 Export as code** — paste into a Databricks notebook to apply descriptions manually")
 
 safe_name = tbl["full_name"].replace(".", "_")
-py_all = _build_pyspark_script(tbl["full_name"], st.session_state.suggestions)
+table_desc_export = st.session_state.table_description
+py_all = _build_pyspark_script(tbl["full_name"], st.session_state.suggestions, table_desc_export)
 
 exp1, exp2, _ = st.columns([1.8, 1.8, 4.4])
 exp1.download_button("⬇ PySpark (All)", data=py_all,
     file_name=f"{safe_name}_all.py", mime="text/plain", use_container_width=True)
 
 if has_approved:
-    py_app = _build_pyspark_script(tbl["full_name"], approved_only)
+    py_app = _build_pyspark_script(tbl["full_name"], approved_only, table_desc_export)
     exp2.download_button("⬇ PySpark (Approved)", data=py_app,
         file_name=f"{safe_name}_approved.py", mime="text/plain", use_container_width=True)
