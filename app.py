@@ -311,6 +311,7 @@ def _init_state():
         "current_user": "",
         "db_host": config.DEFAULT_HOST,
         "db_token": config.DEFAULT_TOKEN,
+        "db_endpoint": config.SERVING_ENDPOINT,
         # Browse
         "catalogs": [], "schemas": [], "tables": [], "columns": [],
         "selected_catalog": None, "selected_schema": None, "selected_table": None,
@@ -382,6 +383,12 @@ with st.sidebar:
             key="db_token",
             type="password",
             placeholder="dapi…",
+        )
+        st.text_input(
+            "Model Endpoint",
+            key="db_endpoint",
+            placeholder="databricks-meta-llama-3-3-70b-instruct",
+            help="The serving endpoint name in this workspace. Differs between stage and prod.",
         )
         if st.button(
             "Connect",
@@ -463,9 +470,10 @@ with st.sidebar:
         tbl = st.session_state.table_meta
         cols = st.session_state.columns
         ws = st.session_state.db_client._ws
+        endpoint = st.session_state.db_endpoint.strip() or config.SERVING_ENDPOINT
         with st.spinner("Generating descriptions…"):
             try:
-                raw = ai_gen.generate_column_descriptions(ws, tbl["full_name"], cols)
+                raw = ai_gen.generate_column_descriptions(ws, tbl["full_name"], cols, endpoint)
             except Exception as e:
                 st.session_state.gen_error = str(e)
                 st.rerun()  # raises RerunException — nothing below executes
@@ -481,7 +489,7 @@ with st.sidebar:
         with st.spinner("Generating table overview…"):
             try:
                 raw_td = ai_gen.generate_table_description(
-                    ws, tbl["full_name"], cols, tbl.get("comment", "")
+                    ws, tbl["full_name"], cols, tbl.get("comment", ""), endpoint
                 )
                 td = hz.humanize(raw_td)
             except Exception:
