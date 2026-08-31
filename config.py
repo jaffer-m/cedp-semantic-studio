@@ -22,5 +22,8 @@ WAREHOUSE_ID: str = _warehouse
 DEFAULT_HOST: str = os.getenv("DATABRICKS_HOST", "").strip()
 DEFAULT_TOKEN: str = os.getenv("DATABRICKS_TOKEN", "").strip()
 
-# Default serving endpoint — Databricks Foundation Model API, no separate key needed.
-SERVING_ENDPOINT: str = "databricks-meta-llama-3-3-70b-instruct"
+# Serving endpoint for AI generation. Override via DATABRICKS_SERVING_ENDPOINT in .env
+# if your workspace uses a different model deployment name.
+SERVING_ENDPOINT: str = os.getenv(
+    "DATABRICKS_SERVING_ENDPOINT", "databricks-meta-llama-3-3-70b-instruct"
+).strip()

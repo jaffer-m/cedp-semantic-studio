@@ -479,6 +479,7 @@ def _init_state():
         "current_user": "",
         "db_host": config.DEFAULT_HOST,
         "db_token": config.DEFAULT_TOKEN,
+        "db_endpoint": config.SERVING_ENDPOINT,
         # Browse
         "catalogs": [], "schemas": [], "tables": [], "columns": [],
         "selected_catalog": None, "selected_schema": None, "selected_table": None,
@@ -560,6 +561,12 @@ with st.sidebar:
             key="db_token",
             type="password",
             placeholder="dapi…",
+        )
+        st.text_input(
+            "Model Endpoint",
+            key="db_endpoint",
+            placeholder="databricks-meta-llama-3-3-70b-instruct",
+            help="The serving endpoint name in this workspace. Differs between stage and prod.",
         )
         if st.button(
             "Connect",
@@ -658,60 +665,34 @@ with st.sidebar:
             disabled=gen_disabled,
             use_container_width=True, type="primary"):
         ws = st.session_state.db_client._ws
+        endpoint = st.session_state.db_endpoint.strip() or config.SERVING_ENDPOINT
+        with st.spinner("Generating descriptions…"):
+            try:
+                raw = ai_gen.generate_column_descriptions(ws, tbl["full_name"], cols, endpoint)
+            except Exception as e:
+                st.session_state.gen_error = str(e)
+                st.rerun()  # raises RerunException — nothing below executes
 
-        if gen_scope == "Table + Columns":
-            tbl = st.session_state.table_meta
-            cols = st.session_state.columns
-            with st.spinner("Generating descriptions…"):
-                try:
-                    raw = ai_gen.generate_column_descriptions(ws, tbl["full_name"], cols)
-                except Exception as e:
-                    st.session_state.gen_error = str(e)
-                    st.rerun()  # raises RerunException — nothing below executes
-
-            # Only reached if generation succeeded
-            st.session_state.gen_error = None
-            with st.spinner("Humanizing…"):
-                humanized = hz.humanize_all(raw)
-            for c in cols:
-                val = humanized.get(c["name"], c["current_comment"])
-                st.session_state.suggestions[c["name"]] = val
-                st.session_state[f"text_{c['name']}"] = val  # keep widget in sync
-
-            with st.spinner("Generating table overview…"):
-                try:
-                    raw_td = ai_gen.generate_table_description(
-                        ws, tbl["full_name"], cols, tbl.get("comment", "")
-                    )
-                    td = hz.humanize(raw_td)
-                except Exception:
-                    td = st.session_state.table_description  # keep existing on failure
-            st.session_state.table_description = td
-            st.session_state["text_table_desc"] = td
-            st.session_state.review_import = {}
-            st.session_state.generated = True
-        else:
-            st.session_state.gen_error = None
-            errors = {}
-            selected_names = st.session_state.ui_tables_multi
-            with st.spinner(f"Generating table overviews ({len(selected_names)} tables)…"):
-                for name in selected_names:
-                    tbl_meta = next((t for t in st.session_state.tables if t["name"] == name), None)
-                    if not tbl_meta:
-                        continue
-                    try:
-                        table_cols = client.get_columns(tbl_meta["full_name"])
-                        raw_td = ai_gen.generate_table_description(
-                            ws, tbl_meta["full_name"], table_cols, tbl_meta.get("comment", "")
-                        )
-                        td = hz.humanize(raw_td)
-                        st.session_state.table_descriptions[tbl_meta["full_name"]] = td
-                        st.session_state[f"text_tabledesc_{tbl_meta['full_name']}"] = td
-                    except Exception as e:
-                        errors[name] = str(e)
-            st.session_state.table_gen_errors = errors
-            st.session_state.generated = True
-
+        # Only reached if generation succeeded
+        st.session_state.gen_error = None
+        with st.spinner("Humanizing…"):
+            humanized = hz.humanize_all(raw)
+        for c in cols:
+            val = humanized.get(c["name"], c["current_comment"])
+            st.session_state.suggestions[c["name"]] = val
+            st.session_state[f"text_{c['name']}"] = val  # keep widget in sync
+        with st.spinner("Generating table overview…"):
+            try:
+                raw_td = ai_gen.generate_table_description(
+                    ws, tbl["full_name"], cols, tbl.get("comment", ""), endpoint
+                )
+                td = hz.humanize(raw_td)
+            except Exception:
+                td = st.session_state.table_description  # keep existing on failure
+        st.session_state.table_description = td
+        st.session_state["text_table_desc"] = td
+        st.session_state.review_import = {}
+        st.session_state.generated = True
         st.rerun()
 
     if st.session_state.get("gen_error"):

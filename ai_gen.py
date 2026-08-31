@@ -55,7 +55,7 @@ Output format:
 }"""
 
 
-def _call_llm(ws: WorkspaceClient, full_name: str, columns: list[dict]) -> dict[str, str]:
+def _call_llm(ws: WorkspaceClient, full_name: str, columns: list[dict], endpoint: str) -> dict[str, str]:
     """Single API call for a batch of columns. Returns {col_name: description}."""
     col_lines = "\n".join(
         f"  - {c['name']} ({c['type']})"
@@ -69,7 +69,7 @@ def _call_llm(ws: WorkspaceClient, full_name: str, columns: list[dict]) -> dict[
     )
 
     response = ws.serving_endpoints.query(
-        name=config.SERVING_ENDPOINT,
+        name=endpoint,
         messages=[
             ChatMessage(role=ChatMessageRole.SYSTEM, content=_SYSTEM_PROMPT),
             ChatMessage(role=ChatMessageRole.USER, content=user_msg),
@@ -94,16 +94,16 @@ def _call_llm(ws: WorkspaceClient, full_name: str, columns: list[dict]) -> dict[
         ) from e
 
 
-def _call_llm_resilient(ws: WorkspaceClient, full_name: str, columns: list[dict]) -> dict[str, str]:
+def _call_llm_resilient(ws: WorkspaceClient, full_name: str, columns: list[dict], endpoint: str) -> dict[str, str]:
     """Call the LLM for a batch; if JSON is truncated, split in half and retry."""
     try:
-        return _call_llm(ws, full_name, columns)
+        return _call_llm(ws, full_name, columns, endpoint)
     except RuntimeError:
         if len(columns) <= 1:
             raise  # can't split further — surface the error
         mid = len(columns) // 2
-        left = _call_llm_resilient(ws, full_name, columns[:mid])
-        right = _call_llm_resilient(ws, full_name, columns[mid:])
+        left = _call_llm_resilient(ws, full_name, columns[:mid], endpoint)
+        right = _call_llm_resilient(ws, full_name, columns[mid:], endpoint)
         return {**left, **right}
 
 
@@ -112,6 +112,7 @@ def generate_table_description(
     full_name: str,
     columns: list[dict],
     current_comment: str = "",
+    endpoint: str = "",
 ) -> str:
     """Generate a 2–3 sentence business overview for the table. Returns plain text."""
     col_names = ", ".join(c["name"] for c in columns[:30])
@@ -124,7 +125,7 @@ def generate_table_description(
         "Return only the description text — no JSON, no bullet points, no formatting."
     )
     response = ws.serving_endpoints.query(
-        name=config.SERVING_ENDPOINT,
+        name=endpoint or config.SERVING_ENDPOINT,
         messages=[
             ChatMessage(role=ChatMessageRole.SYSTEM, content=_SYSTEM_PROMPT),
             ChatMessage(role=ChatMessageRole.USER, content=user_msg),
@@ -139,19 +140,12 @@ def generate_column_descriptions(
     ws: WorkspaceClient,
     full_name: str,
     columns: list[dict],
+    endpoint: str = "",
 ) -> dict[str, str]:
-    """Generate descriptions for all columns, batching to stay within token limits.
-
-    Args:
-        ws: authenticated WorkspaceClient from the Connect form session
-        full_name: catalog.schema.table
-        columns: list of {name, type, nullable, current_comment}
-
-    Returns:
-        {column_name: description} dict
-    """
+    """Generate descriptions for all columns, batching to stay within token limits."""
+    ep = endpoint or config.SERVING_ENDPOINT
     results: dict[str, str] = {}
     batches = [columns[i:i + BATCH_SIZE] for i in range(0, len(columns), BATCH_SIZE)]
     for batch in batches:
-        results.update(_call_llm_resilient(ws, full_name, batch))
+        results.update(_call_llm_resilient(ws, full_name, batch, ep))
     return results
