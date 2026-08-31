@@ -137,6 +137,15 @@ def _type_pill(dtype: str) -> str:
     return f"<span class='dt-pill {cls}'>{dtype}</span>"
 
 
+def _type_badge_html(type_label: str) -> str:
+    badge_class = (
+        "badge-dlt" if "Streaming" in type_label
+        else "badge-mv" if "Materialized" in type_label
+        else "badge-delta"
+    )
+    return f"<span class='type-badge {badge_class}'>{type_label}</span>"
+
+
 # ── Excel export / import helpers ─────────────────────────────────────────
 
 _HEADERS = [
@@ -227,6 +236,23 @@ def _build_excel(full_name: str, columns: list[dict], suggestions: dict, table_d
     return buf.getvalue()
 
 
+def _is_approved(raw: str) -> bool:
+    """Loosely interpret a reviewer's 'approved' cell — tolerates extra words,
+    punctuation, or emoji (e.g. 'Yes - looks good', 'Approved ✅') rather than
+    requiring an exact 'yes'/'y'/'true'/'1' match."""
+    v = raw.strip().lower()
+    if not v or v.startswith(("n", "0", "false")):
+        return False
+    return v.startswith(("y", "true", "1")) or "approve" in v
+
+
+def _safe_cell(row: tuple, idx: dict, key: str):
+    i = idx.get(key)
+    if i is None or i >= len(row):
+        return ""
+    return row[i]
+
+
 def _parse_excel(raw: bytes) -> dict[str, dict]:
     wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
     ws = wb.active
@@ -247,20 +273,20 @@ def _parse_excel(raw: bytes) -> dict[str, dict]:
     idx = {h: i for i, h in enumerate(headers)}
     result = {}
     for row in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
-        name = str(row[idx["column_name"]] or "").strip()
+        name = str(_safe_cell(row, idx, "column_name") or "").strip()
         if not name:
             continue
-        approved_raw = str(row[idx.get("reviewer_approved", -1)] or "").strip().lower()
+        approved_raw = str(_safe_cell(row, idx, "reviewer_approved") or "").strip().lower()
         result[name] = {
-            "proposed_description": str(row[idx.get("proposed_description", -1)] or "").strip(),
-            "approved": approved_raw in ("yes", "y", "true", "1"),
-            "notes": str(row[idx.get("reviewer_notes", -1)] or "").strip(),
+            "proposed_description": str(_safe_cell(row, idx, "proposed_description") or "").strip(),
+            "approved": _is_approved(approved_raw),
+            "notes": str(_safe_cell(row, idx, "reviewer_notes") or "").strip(),
         }
     return result
 
 
 def _parse_csv(raw: bytes) -> dict[str, dict]:
-    reader = csv.DictReader(io.StringIO(raw.decode("utf-8", errors="replace")))
+    reader = csv.DictReader(io.StringIO(raw.decode("utf-8-sig", errors="replace")))
     result = {}
     for row in reader:
         name = (row.get("column_name") or "").strip()
@@ -269,7 +295,132 @@ def _parse_csv(raw: bytes) -> dict[str, dict]:
         approved_raw = (row.get("reviewer_approved") or "").strip().lower()
         result[name] = {
             "proposed_description": (row.get("proposed_description") or "").strip(),
-            "approved": approved_raw in ("yes", "y", "true", "1"),
+            "approved": _is_approved(approved_raw),
+            "notes": (row.get("reviewer_notes") or "").strip(),
+        }
+    return result
+
+
+# ── Table-level review file helpers (Table only scope) ─────────────────────
+
+_TABLE_HEADERS = [
+    "table", "current_description", "proposed_description",
+    "reviewer_approved",   # reviewer fills: Yes / No
+    "reviewer_notes",      # reviewer fills: free text
+]
+
+
+def _build_table_review_excel(descriptions: dict[str, str], current_comments: dict[str, str]) -> bytes:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Table Review"
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(_TABLE_HEADERS))
+    instr = ws.cell(row=1, column=1,
+        value=(
+            "Instructions: Fill in 'reviewer_approved' (Yes or No) for each row. "
+            "You may also edit 'proposed_description' or add 'reviewer_notes'. "
+            "Do not change any other columns. Save and return this file."
+        )
+    )
+    instr.fill = PatternFill("solid", fgColor="E8F4FD")
+    instr.font = Font(italic=True, color="1A4A6E", size=10)
+    instr.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    ws.row_dimensions[1].height = 36
+
+    for col_idx, header in enumerate(_TABLE_HEADERS, 1):
+        cell = ws.cell(row=2, column=col_idx, value=header)
+        cell.fill = _FILL_HEADER
+        cell.font = _FONT_HEADER
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = _BORDER
+    ws.row_dimensions[2].height = 28
+
+    for row_idx, full_name in enumerate(descriptions, 3):
+        row_data = {
+            "table": full_name,
+            "current_description": current_comments.get(full_name, ""),
+            "proposed_description": descriptions.get(full_name, ""),
+            "reviewer_approved": "",
+            "reviewer_notes": "",
+        }
+        for col_idx, header in enumerate(_TABLE_HEADERS, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=row_data[header])
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            cell.border = _BORDER
+            if header in _REVIEWER_COLS:
+                cell.fill = _FILL_REVIEWER
+            else:
+                cell.fill = _FILL_READONLY
+                cell.font = _FONT_READONLY
+
+    for i, w in enumerate([40, 50, 50, 18, 35], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    ws.freeze_panes = "A3"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _build_table_review_csv(descriptions: dict[str, str], current_comments: dict[str, str]) -> bytes:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=_TABLE_HEADERS)
+    writer.writeheader()
+    for full_name in descriptions:
+        writer.writerow({
+            "table": full_name,
+            "current_description": current_comments.get(full_name, ""),
+            "proposed_description": descriptions.get(full_name, ""),
+            "reviewer_approved": "",
+            "reviewer_notes": "",
+        })
+    return buf.getvalue().encode("utf-8")
+
+
+def _parse_table_review_excel(raw: bytes) -> dict[str, dict]:
+    wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
+    ws = wb.active
+
+    header_row_idx = None
+    headers = []
+    for row in ws.iter_rows():
+        vals = [str(c.value or "").strip().lower() for c in row]
+        if "table" in vals and "proposed_description" in vals:
+            header_row_idx = row[0].row
+            headers = vals
+            break
+
+    if header_row_idx is None:
+        raise ValueError("Could not find a header row with 'table' and 'proposed_description'.")
+
+    idx = {h: i for i, h in enumerate(headers)}
+    result = {}
+    for row in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
+        name = str(_safe_cell(row, idx, "table") or "").strip()
+        if not name:
+            continue
+        approved_raw = str(_safe_cell(row, idx, "reviewer_approved") or "").strip().lower()
+        result[name] = {
+            "proposed_description": str(_safe_cell(row, idx, "proposed_description") or "").strip(),
+            "approved": _is_approved(approved_raw),
+            "notes": str(_safe_cell(row, idx, "reviewer_notes") or "").strip(),
+        }
+    return result
+
+
+def _parse_table_review_csv(raw: bytes) -> dict[str, dict]:
+    reader = csv.DictReader(io.StringIO(raw.decode("utf-8-sig", errors="replace")))
+    result = {}
+    for row in reader:
+        name = (row.get("table") or "").strip()
+        if not name:
+            continue
+        approved_raw = (row.get("reviewer_approved") or "").strip().lower()
+        result[name] = {
+            "proposed_description": (row.get("proposed_description") or "").strip(),
+            "approved": _is_approved(approved_raw),
             "notes": (row.get("reviewer_notes") or "").strip(),
         }
     return result
@@ -301,6 +452,23 @@ def _build_pyspark_script(full_name: str, suggestions: dict, table_description: 
     return "\n".join(lines)
 
 
+def _build_multi_table_pyspark_script(descriptions: dict[str, str]) -> str:
+    lines = [
+        "# Table-level descriptions",
+        f"# Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "",
+        "from pyspark.sql import SparkSession",
+        "spark = SparkSession.builder.getOrCreate()",
+        "",
+    ]
+    for full_name, desc in descriptions.items():
+        if desc.strip():
+            quoted = ".".join(f"`{p}`" for p in full_name.split("."))
+            escaped = desc.replace('"', '\\"')
+            lines.append(f'spark.sql("""COMMENT ON TABLE {quoted} IS \\"{escaped}\\"""")')
+    return "\n".join(lines)
+
+
 # ── Session state defaults ────────────────────────────────────────────────
 
 def _init_state():
@@ -318,6 +486,10 @@ def _init_state():
         "generated": False,
         "gen_error": None,    # persists generation errors across reruns
         "review_import": {},  # {col_name: {approved, notes, proposed_description}}
+        # Multi-table ("Table only" scope)
+        "table_descriptions": {},  # {full_name: description}
+        "table_gen_errors": {},    # {table_name: error string}
+        "table_review_import": {},  # {full_name: {approved, notes, proposed_description}}
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -341,7 +513,8 @@ def _connect_databricks(host: str, token: str) -> None:
     st.session_state.current_user = user
     # Reset browse state so catalogs reload with new credentials
     for key in ("catalogs", "schemas", "tables", "columns", "table_meta",
-                "suggestions", "review_import"):
+                "suggestions", "review_import", "table_descriptions",
+                "table_gen_errors", "table_review_import"):
         st.session_state[key] = [] if isinstance(st.session_state[key], list) else {}
     st.session_state.generated = False
     st.session_state.selected_catalog = None
@@ -358,9 +531,14 @@ def _reset(**extra):
     for col in st.session_state.get("columns", []):
         st.session_state.pop(f"text_{col['name']}", None)
     st.session_state.pop("text_table_desc", None)
+    for full_name in st.session_state.get("table_descriptions", {}):
+        st.session_state.pop(f"text_tabledesc_{full_name}", None)
     st.session_state.update(dict(
         columns=[], suggestions={}, table_description="",
-        generated=False, gen_error=None, review_import={}, **extra
+        generated=False, gen_error=None, review_import={},
+        table_descriptions={}, table_gen_errors={}, ui_tables_multi=[],
+        table_review_import={},
+        **extra
     ))
 
 
@@ -435,61 +613,105 @@ with st.sidebar:
             if not st.session_state.tables:
                 st.warning(f"No tables found in `{cat}.{schema}`.")
 
-    table_name = st.selectbox("Table",
-        options=["— select —"] + [t["name"] for t in st.session_state.tables],
-        disabled=not st.session_state.tables, key="ui_table")
+    gen_scope = st.radio(
+        "Generate scope",
+        options=["Table + Columns", "Table only"],
+        key="gen_scope",
+        horizontal=True,
+    )
 
-    if table_name and table_name != "— select —":
-        tbl_meta = next((t for t in st.session_state.tables if t["name"] == table_name), None)
-        if tbl_meta and tbl_meta["full_name"] != (st.session_state.table_meta or {}).get("full_name"):
-            _reset(selected_table=table_name, table_meta=tbl_meta)
-            with st.spinner("Loading columns…"):
-                try:
-                    st.session_state.columns = client.get_columns(tbl_meta["full_name"])
-                except PermissionError as e:
-                    parts = str(e).split("Raw error:", 1)
-                    st.error(f"**Access denied** — {parts[0].strip()}")
-                    if len(parts) > 1:
-                        with st.expander("Raw error (share with your admin)"):
-                            st.code(parts[1].strip())
-                except Exception as e:
-                    st.error(str(e))
+    if gen_scope == "Table + Columns":
+        table_name = st.selectbox("Table",
+            options=["— select —"] + [t["name"] for t in st.session_state.tables],
+            disabled=not st.session_state.tables, key="ui_table")
+
+        if table_name and table_name != "— select —":
+            tbl_meta = next((t for t in st.session_state.tables if t["name"] == table_name), None)
+            if tbl_meta and tbl_meta["full_name"] != (st.session_state.table_meta or {}).get("full_name"):
+                _reset(selected_table=table_name, table_meta=tbl_meta)
+                with st.spinner("Loading columns…"):
+                    try:
+                        st.session_state.columns = client.get_columns(tbl_meta["full_name"])
+                    except PermissionError as e:
+                        parts = str(e).split("Raw error:", 1)
+                        st.error(f"**Access denied** — {parts[0].strip()}")
+                        if len(parts) > 1:
+                            with st.expander("Raw error (share with your admin)"):
+                                st.code(parts[1].strip())
+                    except Exception as e:
+                        st.error(str(e))
+    else:
+        st.multiselect(
+            "Tables",
+            options=[t["name"] for t in st.session_state.tables],
+            disabled=not st.session_state.tables, key="ui_tables_multi",
+        )
 
     st.divider()
 
-    if st.button("⚡ Generate & Humanize",
-            disabled=not st.session_state.columns,
-            use_container_width=True, type="primary"):
-        tbl = st.session_state.table_meta
-        cols = st.session_state.columns
-        ws = st.session_state.db_client._ws
-        with st.spinner("Generating descriptions…"):
-            try:
-                raw = ai_gen.generate_column_descriptions(ws, tbl["full_name"], cols)
-            except Exception as e:
-                st.session_state.gen_error = str(e)
-                st.rerun()  # raises RerunException — nothing below executes
+    gen_disabled = (
+        not st.session_state.columns if gen_scope == "Table + Columns"
+        else not st.session_state.ui_tables_multi
+    )
 
-        # Only reached if generation succeeded
-        st.session_state.gen_error = None
-        with st.spinner("Humanizing…"):
-            humanized = hz.humanize_all(raw)
-        for c in cols:
-            val = humanized.get(c["name"], c["current_comment"])
-            st.session_state.suggestions[c["name"]] = val
-            st.session_state[f"text_{c['name']}"] = val  # keep widget in sync
-        with st.spinner("Generating table overview…"):
-            try:
-                raw_td = ai_gen.generate_table_description(
-                    ws, tbl["full_name"], cols, tbl.get("comment", "")
-                )
-                td = hz.humanize(raw_td)
-            except Exception:
-                td = st.session_state.table_description  # keep existing on failure
-        st.session_state.table_description = td
-        st.session_state["text_table_desc"] = td
-        st.session_state.review_import = {}
-        st.session_state.generated = True
+    if st.button("⚡ Generate & Humanize",
+            disabled=gen_disabled,
+            use_container_width=True, type="primary"):
+        ws = st.session_state.db_client._ws
+
+        if gen_scope == "Table + Columns":
+            tbl = st.session_state.table_meta
+            cols = st.session_state.columns
+            with st.spinner("Generating descriptions…"):
+                try:
+                    raw = ai_gen.generate_column_descriptions(ws, tbl["full_name"], cols)
+                except Exception as e:
+                    st.session_state.gen_error = str(e)
+                    st.rerun()  # raises RerunException — nothing below executes
+
+            # Only reached if generation succeeded
+            st.session_state.gen_error = None
+            with st.spinner("Humanizing…"):
+                humanized = hz.humanize_all(raw)
+            for c in cols:
+                val = humanized.get(c["name"], c["current_comment"])
+                st.session_state.suggestions[c["name"]] = val
+                st.session_state[f"text_{c['name']}"] = val  # keep widget in sync
+
+            with st.spinner("Generating table overview…"):
+                try:
+                    raw_td = ai_gen.generate_table_description(
+                        ws, tbl["full_name"], cols, tbl.get("comment", "")
+                    )
+                    td = hz.humanize(raw_td)
+                except Exception:
+                    td = st.session_state.table_description  # keep existing on failure
+            st.session_state.table_description = td
+            st.session_state["text_table_desc"] = td
+            st.session_state.review_import = {}
+            st.session_state.generated = True
+        else:
+            st.session_state.gen_error = None
+            errors = {}
+            selected_names = st.session_state.ui_tables_multi
+            with st.spinner(f"Generating table overviews ({len(selected_names)} tables)…"):
+                for name in selected_names:
+                    tbl_meta = next((t for t in st.session_state.tables if t["name"] == name), None)
+                    if not tbl_meta:
+                        continue
+                    try:
+                        table_cols = client.get_columns(tbl_meta["full_name"])
+                        raw_td = ai_gen.generate_table_description(
+                            ws, tbl_meta["full_name"], table_cols, tbl_meta.get("comment", "")
+                        )
+                        td = hz.humanize(raw_td)
+                        st.session_state.table_descriptions[tbl_meta["full_name"]] = td
+                        st.session_state[f"text_tabledesc_{tbl_meta['full_name']}"] = td
+                    except Exception as e:
+                        errors[name] = str(e)
+            st.session_state.table_gen_errors = errors
+            st.session_state.generated = True
+
         st.rerun()
 
     if st.session_state.get("gen_error"):
@@ -505,6 +727,195 @@ with st.sidebar:
 
 
 # ── Main area ─────────────────────────────────────────────────────────────
+
+gen_scope = st.session_state.get("gen_scope", "Table + Columns")
+
+if gen_scope == "Table only":
+    selected_names = st.session_state.get("ui_tables_multi", [])
+
+    if not selected_names:
+        st.markdown("""
+<div class='empty-state'>
+  <div class='es-icon'>📖</div>
+  <h3>Select one or more tables to get started</h3>
+  <p>Browse your Unity Catalog from the sidebar, pick tables in the <strong>Tables</strong> multiselect, then generate AI overviews.</p>
+</div>
+""", unsafe_allow_html=True)
+        st.stop()
+
+    st.markdown("### Table-level descriptions")
+
+    for name, err in st.session_state.get("table_gen_errors", {}).items():
+        st.error(f"**{name}** — {err}")
+
+    selected_meta = [
+        t for t in st.session_state.tables if t["name"] in selected_names
+    ]
+    current_comments = {t["full_name"]: t.get("comment", "") for t in selected_meta}
+    review_descriptions = {
+        t["full_name"]: st.session_state.table_descriptions.get(t["full_name"], t.get("comment", ""))
+        for t in selected_meta
+    }
+
+    st.divider()
+    export_col, import_col = st.columns(2)
+
+    with export_col:
+        st.markdown(
+            "<div class='section-title'>📤 Share for Review</div>"
+            "<div class='section-caption'>Download a review file for your team. "
+            "They fill in the approval + notes columns and return it.</div>",
+            unsafe_allow_html=True,
+        )
+        xlsx_col, csv_col = st.columns(2)
+        xlsx_col.download_button(
+            "⬇ .xlsx",
+            data=_build_table_review_excel(review_descriptions, current_comments),
+            file_name="table_descriptions_review.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+        csv_col.download_button(
+            "⬇ .csv",
+            data=_build_table_review_csv(review_descriptions, current_comments),
+            file_name="table_descriptions_review.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    with import_col:
+        st.markdown(
+            "<div class='section-title'>📥 Import Reviewed File</div>"
+            "<div class='section-caption'>Upload the completed file (.xlsx or .csv). "
+            "Approved rows load back into the descriptions above.</div>",
+            unsafe_allow_html=True,
+        )
+        uploaded = st.file_uploader(
+            "Upload reviewed file", type=["xlsx", "csv"],
+            label_visibility="collapsed", key="table_review_upload",
+        )
+        if uploaded:
+            try:
+                raw = uploaded.read()
+                review_data = (
+                    _parse_table_review_csv(raw) if uploaded.name.endswith(".csv")
+                    else _parse_table_review_excel(raw)
+                )
+                approved_count = sum(1 for v in review_data.values() if v["approved"])
+                rejected_count = len(review_data) - approved_count
+
+                for full_name, data in review_data.items():
+                    if data["approved"] and data["proposed_description"]:
+                        val = data["proposed_description"]
+                        st.session_state.table_descriptions[full_name] = val
+                        st.session_state[f"text_tabledesc_{full_name}"] = val
+
+                st.session_state.table_review_import = review_data
+                st.success(f"✅ {approved_count} approved  •  ⛔ {rejected_count} not approved")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not read file: {e}")
+
+    st.divider()
+
+    export_map: dict[str, str] = {}
+    for name in selected_names:
+        tbl_meta = next((t for t in st.session_state.tables if t["name"] == name), None)
+        if not tbl_meta:
+            continue
+        full_name = tbl_meta["full_name"]
+        type_label = tbl_meta.get("type_label", "Delta Table")
+
+        review = st.session_state.table_review_import.get(full_name)
+        review_html = ""
+        if review:
+            if review["approved"]:
+                review_html += " <span class='chip chip-approved'>✓ Approved</span>"
+            else:
+                review_html += " <span class='chip chip-rejected'>✗ Rejected</span>"
+
+        st.markdown(
+            f"#### `{full_name}`{_type_badge_html(type_label)}{review_html}",
+            unsafe_allow_html=True,
+        )
+        if review and review["notes"]:
+            st.markdown(f"<span class='chip chip-note'>💬 {review['notes']}</span>", unsafe_allow_html=True)
+        if tbl_meta.get("comment"):
+            st.caption(f"Current in Databricks: {tbl_meta['comment']}")
+
+        row_left, row_right = st.columns([6, 1])
+        val = row_left.text_area(
+            f"tabledesc_{full_name}",
+            value=st.session_state.table_descriptions.get(full_name, tbl_meta.get("comment", "")),
+            height=80,
+            label_visibility="collapsed",
+            key=f"text_tabledesc_{full_name}",
+            placeholder="Click ⚡ Generate & Humanize to produce an AI overview, or type one manually.",
+        )
+        st.session_state.table_descriptions[full_name] = val
+        export_map[full_name] = val
+        with row_right:
+            st.markdown("<div style='padding-top:4px'></div>", unsafe_allow_html=True)
+            if st.button("✨", key=f"hz_tabledesc_{full_name}", help=f"Re-humanize {full_name}"):
+                humanized_val = hz.humanize(val)
+                st.session_state.table_descriptions[full_name] = humanized_val
+                st.session_state[f"text_tabledesc_{full_name}"] = humanized_val
+                st.rerun()
+
+        st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+
+    has_approved = any(v["approved"] for v in st.session_state.table_review_import.values())
+    approved_export_map = {
+        full_name: export_map[full_name]
+        for full_name, data in st.session_state.table_review_import.items()
+        if data["approved"] and full_name in export_map
+    }
+
+    st.divider()
+    st.markdown(
+        "<div class='section-title'>📋 Export as PySpark</div>"
+        "<div class='section-caption'>One combined script with a COMMENT ON TABLE statement "
+        "for every selected table.</div>",
+        unsafe_allow_html=True,
+    )
+    py_multi = _build_multi_table_pyspark_script(export_map)
+    exp1, exp2, _ = st.columns([1.8, 1.8, 4.4])
+    exp1.download_button(
+        "⬇ Download (All)",
+        data=py_multi,
+        file_name="table_descriptions_all.py",
+        mime="text/plain",
+        use_container_width=True,
+    )
+    if has_approved:
+        py_multi_approved = _build_multi_table_pyspark_script(approved_export_map)
+        exp2.download_button(
+            "⬇ Download (Approved only)",
+            data=py_multi_approved,
+            file_name="table_descriptions_approved.py",
+            mime="text/plain",
+            use_container_width=True,
+        )
+
+    with st.expander("Preview PySpark (All)", expanded=False):
+        st.code(py_multi, language="python")
+    if has_approved:
+        with st.expander("Preview PySpark (Approved only)", expanded=False):
+            st.code(py_multi_approved, language="python")
+
+    if st.button("🗑 Clear", use_container_width=False):
+        for name in selected_names:
+            tbl_meta = next((t for t in st.session_state.tables if t["name"] == name), None)
+            if tbl_meta:
+                st.session_state.pop(f"text_tabledesc_{tbl_meta['full_name']}", None)
+        st.session_state.table_descriptions = {}
+        st.session_state.table_gen_errors = {}
+        st.session_state.table_review_import = {}
+        st.session_state.generated = False
+        st.session_state.gen_error = None
+        st.rerun()
+
+    st.stop()
 
 tbl = st.session_state.table_meta
 cols = st.session_state.columns
@@ -527,14 +938,8 @@ if not tbl:
     st.stop()
 
 type_label = tbl.get("type_label", "Delta Table")
-badge_class = (
-    "badge-dlt" if "Streaming" in type_label
-    else "badge-mv" if "Materialized" in type_label
-    else "badge-delta"
-)
 st.markdown(
-    f"### `{tbl['full_name']}`"
-    f"<span class='type-badge {badge_class}'>{type_label}</span>",
+    f"### `{tbl['full_name']}`{_type_badge_html(type_label)}",
     unsafe_allow_html=True,
 )
 
