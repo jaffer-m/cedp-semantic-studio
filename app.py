@@ -664,6 +664,8 @@ with st.sidebar:
     if st.button("⚡ Generate & Humanize",
             disabled=gen_disabled,
             use_container_width=True, type="primary"):
+        tbl = st.session_state.table_meta
+        cols = st.session_state.columns
         ws = st.session_state.db_client._ws
         endpoint = st.session_state.db_endpoint.strip() or config.SERVING_ENDPOINT
         with st.spinner("Generating descriptions…"):
