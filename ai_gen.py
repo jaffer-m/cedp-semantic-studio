@@ -41,9 +41,12 @@ Rules for generating column descriptions:
 - Do not make assumptions when the meaning cannot be confidently determined from
   the column name, table schema, or available metadata — write a neutral description
   or omit speculation.
-- Never include PII field names or example values in descriptions.
+- Never include PII field names or example values in descriptions, and never
+  speculate about what PII a column might hold if it isn't already evident.
 - Do not reference internal system names or implementation details.
 - Do not repeat the column name or data type in the description.
+- Use consistent terminology across columns in the same table (e.g. always
+  "customer" not a mix of "customer"/"user"/"guest" for the same concept).
 - Return valid JSON only. No markdown fences, no extra text.
 
 Output format:

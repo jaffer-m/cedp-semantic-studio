@@ -14,6 +14,7 @@ import config
 import ai_gen
 import humanize as hz
 from databricks_client import DatabricksClient
+from catalog import list_tables_via_sql
 
 st.set_page_config(
     page_title="CEDP Semantic Studio",
@@ -482,7 +483,8 @@ def _init_state():
         "db_endpoint": config.SERVING_ENDPOINT,
         # Browse
         "catalogs": [], "schemas": [], "tables": [], "columns": [],
-        "selected_catalog": None, "selected_schema": None, "selected_table": None,
+        "table_load_errors": [],
+        "selected_catalog": None, "selected_schemas": [], "selected_table": None,
         "table_meta": {}, "suggestions": {}, "table_description": "",
         "generated": False,
         "gen_error": None,    # persists generation errors across reruns
@@ -497,6 +499,37 @@ def _init_state():
             st.session_state[k] = v
 
 _init_state()
+
+
+def _load_tables_for_schemas(
+    client: "DatabricksClient", catalog: str, schemas: list[str]
+) -> tuple[list[dict], list[str]]:
+    """Load and merge tables from one or more schemas, tagging each with a
+    schema-qualified name so same-named tables in different schemas don't collide.
+
+    Returns (tables, errors) — a schema with a permission error is skipped
+    (not silently dropped) and its message is returned alongside whatever
+    other schemas succeeded.
+    """
+    result = []
+    errors = []
+    for schema in schemas:
+        try:
+            tables = client.list_tables(catalog, schema)
+        except PermissionError as e:
+            errors.append(str(e))
+            continue
+        if not tables:
+            # UC Tables REST API sometimes returns nothing for a schema the
+            # SQL warehouse can see fine (platform-side authorization
+            # inconsistency) — fall back to information_schema via SQL.
+            try:
+                tables = list_tables_via_sql(client._ws, catalog, schema)
+            except Exception:
+                pass
+        for t in tables:
+            result.append({**t, "schema": schema, "qualified_name": f"{schema}.{t['name']}"})
+    return sorted(result, key=lambda x: x["qualified_name"].lower()), errors
 
 
 # ── Connect helper ────────────────────────────────────────────────────────
@@ -515,11 +548,11 @@ def _connect_databricks(host: str, token: str) -> None:
     # Reset browse state so catalogs reload with new credentials
     for key in ("catalogs", "schemas", "tables", "columns", "table_meta",
                 "suggestions", "review_import", "table_descriptions",
-                "table_gen_errors", "table_review_import"):
+                "table_gen_errors", "table_review_import", "table_load_errors"):
         st.session_state[key] = [] if isinstance(st.session_state[key], list) else {}
     st.session_state.generated = False
     st.session_state.selected_catalog = None
-    st.session_state.selected_schema = None
+    st.session_state.selected_schemas = []
     st.session_state.selected_table = None
     st.toast(f"Connected as {user}", icon="✅")
 
@@ -578,7 +611,8 @@ with st.sidebar:
             if not host or not token:
                 st.error("Both Workspace URL and token are required.")
             else:
-                _connect_databricks(host, token)
+                with st.spinner("Connecting…"):
+                    _connect_databricks(host, token)
                 st.rerun()
 
         if connected:
@@ -602,23 +636,33 @@ with st.sidebar:
         options=["— select —"] + st.session_state.catalogs, key="ui_catalog")
 
     if cat and cat != "— select —" and cat != st.session_state.selected_catalog:
-        _reset(selected_catalog=cat, selected_schema=None, selected_table=None,
-               schemas=[], tables=[], table_meta={})
+        _reset(selected_catalog=cat, selected_schemas=[], selected_table=None,
+               schemas=[], tables=[], table_meta={}, table_load_errors=[])
         with st.spinner("Loading schemas…"):
             st.session_state.schemas = client.list_schemas(cat)
             if not st.session_state.schemas:
                 st.warning(f"No schemas found in `{cat}`. Check your USE SCHEMA privilege.")
 
-    schema = st.selectbox("Schema",
-        options=["— select —"] + st.session_state.schemas,
-        disabled=not st.session_state.schemas, key="ui_schema")
+    schemas_selected = st.multiselect("Schema(s)",
+        options=st.session_state.schemas,
+        disabled=not st.session_state.schemas, key="ui_schemas")
 
-    if schema and schema != "— select —" and schema != st.session_state.selected_schema:
-        _reset(selected_schema=schema, selected_table=None, tables=[], table_meta={})
+    if schemas_selected != st.session_state.selected_schemas:
+        _reset(selected_schemas=schemas_selected, selected_table=None, tables=[], table_meta={})
         with st.spinner("Loading tables…"):
-            st.session_state.tables = client.list_tables(cat, schema)
-            if not st.session_state.tables:
-                st.warning(f"No tables found in `{cat}.{schema}`.")
+            tables, table_errors = _load_tables_for_schemas(client, cat, schemas_selected)
+            st.session_state.tables = tables
+            st.session_state.table_load_errors = table_errors
+
+    for err in st.session_state.table_load_errors:
+        parts = err.split("Raw error:", 1)
+        st.error(f"**Access denied** — {parts[0].strip()}")
+        if len(parts) > 1:
+            with st.expander("Raw error (share with your admin)"):
+                st.code(parts[1].strip())
+    if (schemas_selected and not st.session_state.tables
+            and not st.session_state.table_load_errors):
+        st.warning(f"No tables found in the selected schema(s) of `{cat}`.")
 
     gen_scope = st.radio(
         "Generate scope",
@@ -629,11 +673,11 @@ with st.sidebar:
 
     if gen_scope == "Table + Columns":
         table_name = st.selectbox("Table",
-            options=["— select —"] + [t["name"] for t in st.session_state.tables],
+            options=["— select —"] + [t["qualified_name"] for t in st.session_state.tables],
             disabled=not st.session_state.tables, key="ui_table")
 
         if table_name and table_name != "— select —":
-            tbl_meta = next((t for t in st.session_state.tables if t["name"] == table_name), None)
+            tbl_meta = next((t for t in st.session_state.tables if t["qualified_name"] == table_name), None)
             if tbl_meta and tbl_meta["full_name"] != (st.session_state.table_meta or {}).get("full_name"):
                 _reset(selected_table=table_name, table_meta=tbl_meta)
                 with st.spinner("Loading columns…"):
@@ -648,9 +692,18 @@ with st.sidebar:
                     except Exception as e:
                         st.error(str(e))
     else:
+        sel_col, clr_col = st.columns(2)
+        if sel_col.button("Select All", use_container_width=True,
+                           disabled=not st.session_state.tables):
+            st.session_state.ui_tables_multi = [t["qualified_name"] for t in st.session_state.tables]
+            st.rerun()
+        if clr_col.button("Clear All", use_container_width=True,
+                           disabled=not st.session_state.tables):
+            st.session_state.ui_tables_multi = []
+            st.rerun()
         st.multiselect(
             "Tables",
-            options=[t["name"] for t in st.session_state.tables],
+            options=[t["qualified_name"] for t in st.session_state.tables],
             disabled=not st.session_state.tables, key="ui_tables_multi",
         )
 
@@ -704,7 +757,7 @@ with st.sidebar:
             selected_names = st.session_state.ui_tables_multi
             with st.spinner(f"Generating table overviews ({len(selected_names)} tables)…"):
                 for name in selected_names:
-                    tbl_meta = next((t for t in st.session_state.tables if t["name"] == name), None)
+                    tbl_meta = next((t for t in st.session_state.tables if t["qualified_name"] == name), None)
                     if not tbl_meta:
                         continue
                     try:
@@ -756,7 +809,7 @@ if gen_scope == "Table only":
         st.error(f"**{name}** — {err}")
 
     selected_meta = [
-        t for t in st.session_state.tables if t["name"] in selected_names
+        t for t in st.session_state.tables if t["qualified_name"] in selected_names
     ]
     current_comments = {t["full_name"]: t.get("comment", "") for t in selected_meta}
     review_descriptions = {
@@ -803,11 +856,12 @@ if gen_scope == "Table only":
         )
         if uploaded:
             try:
-                raw = uploaded.read()
-                review_data = (
-                    _parse_table_review_csv(raw) if uploaded.name.endswith(".csv")
-                    else _parse_table_review_excel(raw)
-                )
+                with st.spinner("Reading reviewed file…"):
+                    raw = uploaded.read()
+                    review_data = (
+                        _parse_table_review_csv(raw) if uploaded.name.endswith(".csv")
+                        else _parse_table_review_excel(raw)
+                    )
                 approved_count = sum(1 for v in review_data.values() if v["approved"])
                 rejected_count = len(review_data) - approved_count
 
@@ -827,7 +881,7 @@ if gen_scope == "Table only":
 
     export_map: dict[str, str] = {}
     for name in selected_names:
-        tbl_meta = next((t for t in st.session_state.tables if t["name"] == name), None)
+        tbl_meta = next((t for t in st.session_state.tables if t["qualified_name"] == name), None)
         if not tbl_meta:
             continue
         full_name = tbl_meta["full_name"]
@@ -864,7 +918,8 @@ if gen_scope == "Table only":
         with row_right:
             st.markdown("<div style='padding-top:4px'></div>", unsafe_allow_html=True)
             if st.button("✨", key=f"hz_tabledesc_{full_name}", help=f"Re-humanize {full_name}"):
-                humanized_val = hz.humanize(val)
+                with st.spinner("Humanizing…"):
+                    humanized_val = hz.humanize(val)
                 st.session_state.table_descriptions[full_name] = humanized_val
                 st.session_state[f"text_tabledesc_{full_name}"] = humanized_val
                 st.rerun()
@@ -912,7 +967,7 @@ if gen_scope == "Table only":
 
     if st.button("🗑 Clear", use_container_width=False):
         for name in selected_names:
-            tbl_meta = next((t for t in st.session_state.tables if t["name"] == name), None)
+            tbl_meta = next((t for t in st.session_state.tables if t["qualified_name"] == name), None)
             if tbl_meta:
                 st.session_state.pop(f"text_tabledesc_{tbl_meta['full_name']}", None)
         st.session_state.table_descriptions = {}
@@ -965,7 +1020,8 @@ st.session_state.table_description = table_desc
 with td_right:
     st.markdown("<div style='padding-top:4px'></div>", unsafe_allow_html=True)
     if st.button("✨", key="hz_table_desc", help="Re-humanize table description"):
-        humanized_td = hz.humanize(table_desc)
+        with st.spinner("Humanizing…"):
+            humanized_td = hz.humanize(table_desc)
         st.session_state.table_description = humanized_td
         st.session_state["text_table_desc"] = humanized_td
         st.rerun()
@@ -1009,11 +1065,12 @@ with import_col:
     )
     if uploaded:
         try:
-            raw = uploaded.read()
-            review_data = (
-                _parse_csv(raw) if uploaded.name.endswith(".csv")
-                else _parse_excel(raw)
-            )
+            with st.spinner("Reading reviewed file…"):
+                raw = uploaded.read()
+                review_data = (
+                    _parse_csv(raw) if uploaded.name.endswith(".csv")
+                    else _parse_excel(raw)
+                )
             approved_count = sum(1 for v in review_data.values() if v["approved"])
             rejected_count = len(review_data) - approved_count
 
@@ -1077,7 +1134,8 @@ for col in cols:
     with c5:
         st.markdown("<div style='padding-top:4px'></div>", unsafe_allow_html=True)
         if st.button("✨", key=f"hz_{name}", help=f"Re-humanize {name}"):
-            val = hz.humanize(st.session_state.suggestions.get(name, ""))
+            with st.spinner("Humanizing…"):
+                val = hz.humanize(st.session_state.suggestions.get(name, ""))
             st.session_state.suggestions[name] = val
             st.session_state[f"text_{name}"] = val  # keep widget in sync
             st.rerun()

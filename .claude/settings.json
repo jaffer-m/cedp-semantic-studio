@@ -6,7 +6,18 @@
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('/Users/bs70916/claude-project/cedp-semantic-studio/app.py'\\).read\\(\\)\\)\")",
       "Bash(.venv/bin/python3 -c ' *)",
       "Bash(.venv/bin/python3 -c \"import ast; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); print\\('syntax ok'\\)\")",
-      "Bash(.venv/bin/python3 -m py_compile app.py)"
+      "Bash(.venv/bin/python3 -m py_compile app.py)",
+      "WebFetch(domain:kroger.atlassian.net)",
+      "Bash(python3 -)",
+      "Bash(python3 -m py_compile app.py)",
+      "Bash(python3 -c \"import streamlit; print\\(streamlit.__version__\\)\")",
+      "Bash(kill 25713)",
+      "Bash(python3 -m py_compile app.py databricks_client.py)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"import sys; print\\(sys.path\\)\")",
+      "Bash(python3 -m py_compile databricks_client.py app.py)",
+      "Bash(ps -p 27027 -o lstart=)",
+      "Bash(.venv/bin/pip show *)"
     ]
   }
 }

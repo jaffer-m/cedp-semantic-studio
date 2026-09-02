@@ -5,6 +5,12 @@ databricks_client.py via the UC REST API.
 
 COMMENT ON COLUMN is DDL that must run through a SQL warehouse — that's why
 this module still uses Statement Execution rather than the REST API.
+
+list_tables_via_sql is a browse-op fallback: some schemas' tables are visible
+to a SQL warehouse (information_schema) but not to the UC Tables REST API for
+the same identity — a platform-side authorization inconsistency, not
+something the caller can avoid. app.py falls back to it when the REST API
+returns no tables for a schema.
 """
 
 import re
@@ -28,6 +34,22 @@ def _run_sql(ws: WorkspaceClient, sql: str) -> None:
             else "unknown error"
         )
         raise RuntimeError(f"SQL failed: {msg}")
+
+
+def _run_query(ws: WorkspaceClient, sql: str) -> list[list]:
+    resp = ws.statement_execution.execute_statement(
+        warehouse_id=config.WAREHOUSE_ID,
+        statement=sql,
+        wait_timeout="50s",
+    )
+    if not resp.status or resp.status.state != StatementState.SUCCEEDED:
+        msg = (
+            resp.status.error.message
+            if resp.status and resp.status.error
+            else "unknown error"
+        )
+        raise RuntimeError(f"SQL failed: {msg}")
+    return resp.result.data_array if resp.result and resp.result.data_array else []
 
 
 def _validate(name: str) -> None:
@@ -86,3 +108,34 @@ def apply_column_comment(
     except RuntimeError as e:
         _check_permission_error(str(e), f"TABLE {full_name}")
         raise
+
+
+def list_tables_via_sql(ws: WorkspaceClient, catalog_name: str, schema: str) -> list[dict]:
+    """Fallback table listing via information_schema, for schemas where the
+    UC Tables REST API returns nothing despite the SQL warehouse having access.
+    """
+    _validate(catalog_name)
+    _validate(schema)
+    rows = _run_query(
+        ws,
+        "SELECT table_name, table_type, comment "
+        f"FROM {_quote(catalog_name)}.information_schema.tables "
+        f"WHERE table_schema = '{_escape(schema)}'",
+    )
+    result = []
+    for name, table_type, comment in rows:
+        table_type = table_type or ""
+        if table_type == "STREAMING_TABLE":
+            type_label = "DLT Streaming"
+        elif table_type == "MATERIALIZED_VIEW":
+            type_label = "Materialized View"
+        else:
+            type_label = "Delta Table"
+        result.append({
+            "name": name or "",
+            "full_name": f"{catalog_name}.{schema}.{name}",
+            "table_type": table_type,
+            "type_label": type_label,
+            "comment": comment or "",
+        })
+    return sorted(result, key=lambda x: x["name"].lower())

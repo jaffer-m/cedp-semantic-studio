@@ -31,7 +31,9 @@ class DatabricksClient:
 
     def list_catalogs(self) -> list[str]:
         try:
-            return sorted(c.name for c in self._ws.catalogs.list() if c.name)
+            return sorted(
+                c.name for c in self._ws.catalogs.list(include_browse=True) if c.name
+            )
         except PermissionDenied:
             return []
 
@@ -39,7 +41,7 @@ class DatabricksClient:
         try:
             return sorted(
                 s.name
-                for s in self._ws.schemas.list(catalog_name=catalog)
+                for s in self._ws.schemas.list(catalog_name=catalog, include_browse=True)
                 if s.name
             )
         except (PermissionDenied, NotFound, ResourceDoesNotExist):
@@ -48,7 +50,9 @@ class DatabricksClient:
     def list_tables(self, catalog: str, schema: str) -> list[dict]:
         try:
             result = []
-            for t in self._ws.tables.list(catalog_name=catalog, schema_name=schema):
+            for t in self._ws.tables.list(
+                catalog_name=catalog, schema_name=schema, include_browse=True
+            ):
                 table_type = t.table_type.value if t.table_type else ""
                 if table_type == "STREAMING_TABLE":
                     type_label = "DLT Streaming"
@@ -64,8 +68,24 @@ class DatabricksClient:
                     "comment": t.comment or "",
                 })
             return sorted(result, key=lambda x: x["name"].lower())
-        except (PermissionDenied, NotFound, ResourceDoesNotExist):
-            return []
+        except (NotFound, ResourceDoesNotExist) as e:
+            raise PermissionError(
+                f"Schema {catalog}.{schema} not found or not accessible\n\n"
+                f"Raw error: {type(e).__name__}: {e}"
+            ) from e
+        except PermissionDenied as e:
+            raise PermissionError(
+                f"Missing privilege on SCHEMA {catalog}.{schema}\n\n"
+                f"Ask your Databricks admin to run:\n"
+                f"  GRANT USE SCHEMA ON SCHEMA `{catalog}`.`{schema}` TO `<user-or-group>`;\n"
+                f"  GRANT SELECT ON SCHEMA `{catalog}`.`{schema}` TO `<user-or-group>`;\n\n"
+                f"Raw error: {type(e).__name__}: {e}"
+            ) from e
+        except Exception as e:
+            raise PermissionError(
+                f"Unexpected error listing tables in {catalog}.{schema}\n\n"
+                f"Raw error: {type(e).__name__}: {e}"
+            ) from e
 
     def get_columns(self, full_name: str) -> list[dict]:
         """Fetch column metadata for a table via the UC REST API."""
